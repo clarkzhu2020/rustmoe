@@ -1,0 +1,15 @@
+[package]
+name = "rustmoe-memory"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "VRAM, RAM, and disk budget planning"
+
+[dependencies]
+rustmoe-model = { path = "../model", version = "0.1.0" }
+rustmoe-attention = { path = "../attention", version = "0.1.0" }
+serde.workspace = true
+serde_json.workspace = true
+sysinfo.workspace = true
+thiserror.workspace = true

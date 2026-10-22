@@ -1,0 +1,11 @@
+[package]
+name = "rustmoe-telemetry"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Runtime counters, latency summaries, and Prometheus output"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true

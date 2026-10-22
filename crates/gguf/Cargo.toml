@@ -1,0 +1,15 @@
+[package]
+name = "rustmoe-gguf"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Streaming GGUF v2/v3 parser and split manifest validator"
+
+[dependencies]
+rustmoe-quant = { path = "../quant", version = "0.1.0" }
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

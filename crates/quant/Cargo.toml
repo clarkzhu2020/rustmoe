@@ -1,0 +1,11 @@
+[package]
+name = "rustmoe-quant"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "GGML quantization descriptors and reference dequantizers for RustMoE"
+
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true

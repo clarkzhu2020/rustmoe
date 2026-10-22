@@ -1,0 +1,11 @@
+[package]
+name = "rustmoe-tokenizer"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "GGUF GPT-2 byte-level BPE tokenizer"
+
+[dependencies]
+rustmoe-gguf = { path = "../gguf", version = "0.1.0" }
+thiserror.workspace = true

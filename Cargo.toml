@@ -1,0 +1,57 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/quant",
+    "crates/gguf",
+    "crates/model",
+    "crates/attention",
+    "crates/memory",
+    "crates/io-engine",
+    "crates/expert-cache",
+    "crates/scheduler",
+    "crates/backend",
+    "crates/backend-llama",
+    "crates/tokenizer",
+    "crates/telemetry",
+    "crates/inference",
+    "crates/server",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.82"
+license = "MIT"
+authors = ["RustMoE contributors"]
+
+[workspace.dependencies]
+anyhow = "1.0"
+async-stream = "0.3"
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
+bytes = "1.7"
+clap = { version = "4.5", features = ["derive", "env"] }
+futures-util = "0.3"
+hex = "0.4"
+http-body-util = "0.1"
+memmap2 = "0.9"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
+sysinfo = "0.33"
+thiserror = "2.0"
+tokio = { version = "1.40", features = ["rt-multi-thread", "macros", "sync", "signal", "fs", "net", "time", "io-util"] }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+panic = "unwind"
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 2

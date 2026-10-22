@@ -1,0 +1,19 @@
+[package]
+name = "rustmoe-io-engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Mmap and explicit asynchronous GGUF weight reads"
+
+[dependencies]
+rustmoe-gguf = { path = "../gguf", version = "0.1.0" }
+rustmoe-model = { path = "../model", version = "0.1.0" }
+rustmoe-quant = { path = "../quant", version = "0.1.0" }
+memmap2.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

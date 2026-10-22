@@ -1,0 +1,10 @@
+/target
+/.research
+/.models
+/workspace
+/fixtures/*.gguf
+/fixtures/*.gguf_file
+*.log
+.DS_Store
+kernels/cuda/*.cubin
+kernels/cuda/*.ptx

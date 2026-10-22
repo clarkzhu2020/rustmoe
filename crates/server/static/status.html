@@ -1,0 +1,871 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RustMoE — model status</title>
+<style>
+:root {
+  --bg: #080c14;
+  --bg2: #0d1422;
+  --card: rgba(17, 25, 40, 0.86);
+  --line: #22304a;
+  --text: #e7edf7;
+  --muted: #8fa0ba;
+  --dim: #60718c;
+  --accent: #2dd4bf;
+  --accent2: #60a5fa;
+  --ok: #34d399;
+  --warn: #fbbf24;
+  --err: #f87171;
+  --mono: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; min-height: 100%; }
+body {
+  color: var(--text);
+  background:
+    radial-gradient(900px 500px at 15% -10%, rgba(45, 212, 191, .12), transparent 60%),
+    radial-gradient(1000px 600px at 95% 0%, rgba(96, 165, 250, .10), transparent 60%),
+    linear-gradient(180deg, var(--bg), var(--bg2) 60%, #070b12);
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 14px;
+  line-height: 1.45;
+}
+.shell { max-width: 1420px; margin: 0 auto; padding: 22px 24px 40px; }
+header {
+  display: flex; align-items: center; justify-content: space-between; gap: 18px;
+  padding: 10px 2px 20px; flex-wrap: wrap;
+}
+.brand { display: flex; align-items: center; gap: 12px; }
+.mark {
+  width: 42px; height: 42px; border-radius: 12px;
+  display: grid; place-items: center;
+  background: linear-gradient(135deg, rgba(45,212,191,.24), rgba(96,165,250,.18));
+  border: 1px solid rgba(45,212,191,.4);
+  color: var(--accent); font-weight: 800; letter-spacing: .5px;
+}
+.brand h1 { margin: 0; font-size: 18px; letter-spacing: .4px; }
+.brand small { display: block; color: var(--muted); font-size: 11px; letter-spacing: .8px; text-transform: uppercase; }
+.header-right { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.badge {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 5px 10px; border-radius: 999px; font-size: 12px;
+  border: 1px solid var(--line); color: var(--muted); background: rgba(255,255,255,.02);
+}
+.badge.ok { color: var(--ok); border-color: rgba(52,211,153,.35); background: rgba(52,211,153,.08); }
+.badge.warn { color: var(--warn); border-color: rgba(251,191,36,.35); background: rgba(251,191,36,.08); }
+.badge.err { color: var(--err); border-color: rgba(248,113,113,.35); background: rgba(248,113,113,.08); }
+.dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; box-shadow: 0 0 12px currentColor; }
+.dot.live { animation: pulse 1.8s ease-in-out infinite; }
+@keyframes pulse { 0%,100% { opacity: .35; transform: scale(.85); } 50% { opacity: 1; transform: scale(1.1); } }
+button, input {
+  font: inherit; color: var(--text);
+  background: rgba(255,255,255,.04); border: 1px solid var(--line);
+  border-radius: 9px; padding: 7px 10px; outline: none;
+}
+button { cursor: pointer; }
+button:hover { border-color: #385073; background: rgba(255,255,255,.07); }
+input::placeholder { color: var(--dim); }
+.hero {
+  display: flex; align-items: flex-end; justify-content: space-between; gap: 20px;
+  padding: 8px 2px 20px; flex-wrap: wrap;
+}
+.hero h2 { margin: 0; font-size: clamp(22px, 3vw, 36px); letter-spacing: -.6px; font-weight: 650; }
+.hero p { margin: 8px 0 0; color: var(--muted); }
+.hero .meta { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+.grid { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 14px; }
+.card {
+  background: var(--card); border: 1px solid var(--line); border-radius: 16px;
+  padding: 17px 18px; min-width: 0;
+  box-shadow: 0 18px 45px rgba(0,0,0,.22), inset 0 1px 0 rgba(255,255,255,.03);
+  backdrop-filter: blur(10px);
+}
+.card h3 {
+  margin: 0 0 12px; font-size: 11px; letter-spacing: 1.4px; text-transform: uppercase;
+  color: var(--dim); font-weight: 700;
+}
+.span-3 { grid-column: span 3; }
+.span-4 { grid-column: span 4; }
+.span-5 { grid-column: span 5; }
+.span-6 { grid-column: span 6; }
+.span-7 { grid-column: span 7; }
+.span-8 { grid-column: span 8; }
+.span-12 { grid-column: span 12; }
+.metric { font-size: 31px; font-weight: 650; letter-spacing: -1px; line-height: 1.1; }
+.metric.small { font-size: 24px; }
+.sub { color: var(--muted); font-size: 12px; margin-top: 5px; }
+.mono { font-family: var(--mono); }
+.bar { height: 7px; border-radius: 999px; background: #1a2436; overflow: hidden; margin-top: 12px; }
+.bar > span { display: block; height: 100%; width: 0; border-radius: inherit; background: linear-gradient(90deg, var(--accent), var(--accent2)); transition: width .45s ease; }
+.bar.ok > span { background: linear-gradient(90deg, #34d399, #2dd4bf); }
+.bar.warn > span { background: linear-gradient(90deg, #fbbf24, #f59e0b); }
+.bar.err > span { background: linear-gradient(90deg, #f87171, #ef4444); }
+.rows { display: grid; gap: 9px; }
+.row { display: flex; align-items: baseline; justify-content: space-between; gap: 14px; }
+.row .k { color: var(--muted); font-size: 12px; }
+.row .v { font-family: var(--mono); font-size: 13px; text-align: right; }
+.kv { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 18px; }
+.kv .row { display: block; }
+.kv .row .k { display: block; }
+.kv .row .v { display: block; text-align: left; margin-top: 2px; }
+.plan-line { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 12px; }
+.chip { padding: 4px 8px; border-radius: 7px; background: #131d2e; border: 1px solid #22304a; font-size: 12px; color: var(--muted); }
+.chip b { color: var(--text); font-weight: 600; }
+.warn-list { margin: 0; padding: 0; list-style: none; display: grid; gap: 8px; }
+.warn-list li { color: var(--muted); font-size: 12px; padding-left: 14px; position: relative; }
+.warn-list li:before { content: ""; position: absolute; left: 0; top: .55em; width: 5px; height: 5px; border-radius: 50%; background: var(--warn); }
+.empty { color: var(--dim); font-size: 12px; }
+canvas { width: 100%; height: 210px; display: block; }
+.legend { display: flex; gap: 14px; color: var(--muted); font-size: 11px; margin-top: 6px; }
+.legend i { display: inline-block; width: 14px; height: 3px; border-radius: 2px; margin-right: 5px; vertical-align: middle; }
+.live-preview { margin-top: 10px; min-height: 38px; max-height: 58px; overflow: hidden; color: var(--muted); font-size: 11px; line-height: 1.45; border-top: 1px solid var(--line); padding-top: 8px; }
+table { width: 100%; border-collapse: collapse; font-size: 12px; }
+th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid #1a263b; }
+th { color: var(--dim); font-size: 10px; text-transform: uppercase; letter-spacing: 1px; }
+td { color: var(--muted); font-family: var(--mono); }
+tr:last-child td { border-bottom: 0; }
+.api-grid { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 18px; }
+.endpoint-list { display:flex; flex-wrap:wrap; gap:6px; margin-top:12px; }
+.endpoint-list a { color: var(--muted); text-decoration: none; font-family: var(--mono); font-size: 10px; padding: 4px 7px; border: 1px solid var(--line); border-radius: 6px; background: rgba(255,255,255,.025); }
+.endpoint-list a:hover { color: var(--text); border-color: #385073; }
+.api-grid > div { min-width: 0; }
+.api-grid .rows .v { overflow-wrap: anywhere; }
+.code-title { display:flex; align-items:center; justify-content:space-between; color: var(--dim); font-size:10px; text-transform:uppercase; letter-spacing:1px; margin-bottom:6px; }
+.code { margin:0; padding:10px 11px; border:1px solid var(--line); border-radius:8px; background:#070c15; color:#cbd5e1; font:10.5px/1.55 var(--mono); white-space:pre-wrap; word-break:break-word; max-height:170px; overflow:auto; }
+button.copy { padding:3px 7px; font-size:10px; text-transform:none; letter-spacing:0; }
+@media(max-width:800px){.api-grid{grid-template-columns:1fr}}
+details { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 12px; }
+summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+pre { margin: 10px 0 0; max-height: 320px; overflow: auto; background: #080d16; border: 1px solid #1a263b; border-radius: 10px; padding: 12px; color: #a9bbd4; font-family: var(--mono); font-size: 11px; }
+#authbar {
+  display: none; margin: 0 0 14px; padding: 11px 14px; border-radius: 11px;
+  border: 1px solid rgba(251,191,36,.35); background: rgba(251,191,36,.07); color: #f5d98b;
+  align-items: center; gap: 10px; flex-wrap: wrap;
+}
+#authbar input { min-width: 260px; }
+#errorbar {
+  display: none; margin: 0 0 14px; padding: 11px 14px; border-radius: 11px;
+  border: 1px solid rgba(248,113,113,.35); background: rgba(248,113,113,.07); color: #fca5a5;
+}
+.footer { color: var(--dim); font-size: 11px; display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 22px 2px 0; }
+.footer a { color: var(--muted); }
+@media (max-width: 1050px) {
+  .span-3, .span-4, .span-5 { grid-column: span 6; }
+  .span-7, .span-8 { grid-column: span 12; }
+}
+@media (max-width: 640px) {
+  .shell { padding: 16px 14px 28px; }
+  .span-3, .span-4, .span-5, .span-6 { grid-column: span 12; }
+  .metric { font-size: 27px; }
+  .kv { grid-template-columns: 1fr; }
+  .header-right { width: 100%; }
+}
+</style>
+</head>
+<body>
+<div class="shell">
+  <header>
+    <div class="brand">
+      <div class="mark">RM</div>
+      <div>
+        <h1>RustMoE</h1>
+        <small>DeepSeek control plane</small>
+      </div>
+    </div>
+    <div class="header-right">
+      <span id="conn" class="badge"><span class="dot"></span><span id="connText">connecting</span></span>
+      <button id="pause">Pause</button>
+      <button id="refresh">Refresh</button>
+      <a class="badge" href="/chat" style="text-decoration:none">Chat</a>
+      <a class="badge" href="/agent" style="text-decoration:none">Agent</a>
+      <input id="key" type="password" autocomplete="off" placeholder="API key (optional)" title="Stored only in localStorage">
+    </div>
+  </header>
+
+  <div id="authbar">
+    <strong>API key required.</strong>
+    <span>Enter the server key to load runtime details.</span>
+    <input id="authkey" type="password" placeholder="Bearer token">
+    <button id="authapply">Apply</button>
+  </div>
+  <div id="errorbar"></div>
+
+  <section class="hero">
+    <div>
+      <h2 id="model">Waiting for model…</h2>
+      <p id="subtitle">Connecting to the runtime.</p>
+      <div class="meta">
+        <span id="backend" class="badge">backend —</span>
+        <span id="mode" class="badge">mode —</span>
+        <span id="contextBadge" class="badge">context —</span>
+      </div>
+    </div>
+    <div class="badge" id="updated">never updated</div>
+  </section>
+
+  <div class="grid" style="margin-bottom:14px">
+    <div class="card span-3">
+      <h3>CPU</h3>
+      <div class="metric" id="liveCpu">—</div>
+      <div class="sub" id="liveCpuSub">usage</div>
+      <div class="bar" id="liveCpuBar"><span></span></div>
+    </div>
+    <div class="card span-3">
+      <h3>GPU utilization</h3>
+      <div class="metric" id="liveGpu">—</div>
+      <div class="sub" id="liveGpuSub">utilization</div>
+      <div class="bar" id="liveGpuBar"><span></span></div>
+    </div>
+    <div class="card span-3">
+      <h3>RAM</h3>
+      <div class="metric" id="liveRam">—</div>
+      <div class="sub" id="liveRamSub">used of total</div>
+      <div class="bar" id="liveRamBar"><span></span></div>
+    </div>
+    <div class="card span-3">
+      <h3>Current request</h3>
+      <div><span id="livePhase" class="badge">idle</span></div>
+      <div class="rows" style="margin-top:10px">
+        <div class="row"><span class="k">prompt</span><span class="v" id="livePrompt">0</span></div>
+        <div class="row"><span class="k">generated</span><span class="v" id="liveGen">0</span></div>
+        <div class="row"><span class="k">elapsed</span><span class="v" id="liveElapsed">0 ms</span></div>
+        <div class="row"><span class="k">current tok/s</span><span class="v" id="liveTps">—</span></div>
+      </div>
+      <div class="live-preview mono" id="livePreview">waiting for a request…</div>
+    </div>
+    <div class="card span-12">
+      <h3>System history <span style="text-transform:none;letter-spacing:0;font-weight:400;color:var(--dim)">CPU, GPU, RAM, VRAM %</span></h3>
+      <canvas id="systemChart" width="1200" height="180"></canvas>
+      <div class="legend"><span><i style="background:#2dd4bf"></i>CPU</span><span><i style="background:#60a5fa"></i>GPU</span><span><i style="background:#fbbf24"></i>RAM</span><span><i style="background:#f472b6"></i>VRAM</span></div>
+    </div>
+  </div>
+
+  <div class="grid">
+    <div class="card span-3">
+      <h3>Service</h3>
+      <div class="metric" id="uptime">—</div>
+      <div class="sub">uptime</div>
+      <div class="rows" style="margin-top:14px">
+        <div class="row"><span class="k">health</span><span class="v" id="health">—</span></div>
+        <div class="row"><span class="k">requests</span><span class="v" id="requests">—</span></div>
+        <div class="row"><span class="k">active</span><span class="v" id="active">—</span></div>
+      </div>
+    </div>
+
+    <div class="card span-3">
+      <h3>Context</h3>
+      <div class="metric" id="context">—</div>
+      <div class="sub">tokens allocated</div>
+      <div class="bar" id="contextBar"><span></span></div>
+      <div class="rows" style="margin-top:12px">
+        <div class="row"><span class="k">native limit</span><span class="v" id="contextMax">—</span></div>
+        <div class="row"><span class="k">used now</span><span class="v" id="contextUsed">—</span></div>
+      </div>
+    </div>
+
+    <div class="card span-3">
+      <h3>VRAM</h3>
+      <div class="metric" id="vramFree">—</div>
+      <div class="sub" id="vramSub">free of total</div>
+      <div class="bar" id="vramBar"><span></span></div>
+      <div class="rows" style="margin-top:12px">
+        <div class="row"><span class="k">startup headroom</span><span class="v" id="headroom">—</span></div>
+        <div class="row"><span class="k">GPU</span><span class="v" id="gpuName">—</span></div>
+      </div>
+    </div>
+
+    <div class="card span-3">
+      <h3>Decode</h3>
+      <div class="metric" id="tokps">—</div>
+      <div class="sub" id="tokpsSub">tokens / second</div>
+      <div class="rows" style="margin-top:14px">
+        <div class="row"><span class="k">TTFT mean</span><span class="v" id="ttft">—</span></div>
+        <div class="row"><span class="k">decode mean</span><span class="v" id="decodeMean">—</span></div>
+        <div class="row"><span class="k">prompt tok/s</span><span class="v" id="promptTps">—</span></div>
+        <div class="row"><span class="k">completed</span><span class="v" id="completionTokens">—</span></div>
+      </div>
+    </div>
+
+    <div class="card span-5">
+      <h3>Device plan</h3>
+      <div class="rows">
+        <div class="row"><span class="k">mode</span><span class="v" id="planMode">—</span></div>
+        <div class="row"><span class="k">GPU expert layers</span><span class="v" id="gpuLayers">—</span></div>
+        <div class="row"><span class="k">host expert layers</span><span class="v" id="hostLayers">—</span></div>
+        <div class="row"><span class="k">hot-expert cache</span><span class="v" id="planCache">—</span></div>
+        <div class="row"><span class="k">available RAM</span><span class="v" id="availableRam">—</span></div>
+      </div>
+      <div class="plan-line" id="planNotes"></div>
+    </div>
+
+    <div class="card span-4">
+      <h3>llama.cpp MoE cache</h3>
+      <div class="metric small" id="cacheRate">—</div>
+      <div class="sub">hit rate</div>
+      <div class="bar" id="cacheBar"><span></span></div>
+      <div class="rows" style="margin-top:12px">
+        <div class="row"><span class="k">hits</span><span class="v" id="cacheHits">—</span></div>
+        <div class="row"><span class="k">misses</span><span class="v" id="cacheMisses">—</span></div>
+        <div class="row"><span class="k">uploaded</span><span class="v" id="cacheUploaded">—</span></div>
+      </div>
+    </div>
+
+    <div class="card span-3">
+      <h3>Memory plan (native)</h3>
+      <div class="rows">
+        <div class="row"><span class="k">status</span><span class="v" id="planStatus">—</span></div>
+        <div class="row"><span class="k">VRAM</span><span class="v" id="memVram">—</span></div>
+        <div class="row"><span class="k">RAM</span><span class="v" id="memRam">—</span></div>
+        <div class="row"><span class="k">planner cache</span><span class="v" id="memExpert">—</span></div>
+        <div class="row"><span class="k">KV</span><span class="v" id="memKv">—</span></div>
+      </div>
+    </div>
+
+    <div class="card span-8">
+      <h3>Latency history <span style="text-transform:none;letter-spacing:0;font-weight:400;color:var(--dim)">(mean per refresh)</span></h3>
+      <canvas id="latency" width="900" height="230"></canvas>
+      <div class="legend"><span><i style="background:#2dd4bf"></i>TTFT ms</span><span><i style="background:#60a5fa"></i>decode ms / token</span></div>
+    </div>
+
+    <div class="card span-4">
+      <h3>Warnings</h3>
+      <ul class="warn-list" id="warnings"><li class="empty">No warnings.</li></ul>
+    </div>
+
+    <div class="card span-12">
+      <h3>API access</h3>
+      <div class="api-grid">
+        <div>
+          <div class="rows">
+            <div class="row"><span class="k">base URL</span><span class="v mono" id="apiBase">—</span></div>
+            <div class="row"><span class="k">OpenAI base</span><span class="v mono" id="apiOpenAI">—</span></div>
+            <div class="row"><span class="k">chat completions</span><span class="v mono" id="apiChat">—</span></div>
+            <div class="row"><span class="k">model</span><span class="v mono" id="apiModel">—</span></div>
+            <div class="row"><span class="k">auth</span><span class="v" id="apiAuth">—</span></div>
+            <div class="row"><span class="k">streaming</span><span class="v">SSE (stream: true)</span></div>
+          </div>
+          <div class="endpoint-list" id="apiEndpointList"></div>
+        </div>
+        <div>
+          <div class="code-title"><span>OpenAI-compatible curl</span><button class="copy" data-copy="curlSnippet">Copy</button></div>
+          <pre class="code" id="curlSnippet">—</pre>
+          <div class="code-title" style="margin-top:10px"><span>Dev Agent curl</span><button class="copy" data-copy="agentSnippet">Copy</button></div>
+          <pre class="code" id="agentSnippet">—</pre>
+          <div class="hint" style="margin-top:8px">Replace the model id if your client uses an alias. Set the bearer token from the field above when auth is required.</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card span-12">
+      <h3>Recent requests</h3>
+      <table>
+        <thead><tr><th>time</th><th>prompt</th><th>completion</th><th>prefill</th><th>decode</th><th>decode tok/s</th><th>status</th></tr></thead>
+        <tbody id="recent"><tr><td colspan="7" class="empty">No completed requests.</td></tr></tbody>
+      </table>
+    </div>
+
+    <div class="card span-12">
+      <h3>Runtime details</h3>
+      <div class="kv">
+        <div class="row"><span class="k">model path</span><span class="v mono" id="modelPath">—</span></div>
+        <div class="row"><span class="k">architecture</span><span class="v mono" id="arch">—</span></div>
+        <div class="row"><span class="k">chat format</span><span class="v mono" id="chatFormat">—</span></div>
+        <div class="row"><span class="k">tensors</span><span class="v mono" id="tensors">—</span></div>
+        <div class="row"><span class="k">tensor bytes</span><span class="v mono" id="tensorBytes">—</span></div>
+        <div class="row"><span class="k">auto placement</span><span class="v mono" id="autoDevice">—</span></div>
+      </div>
+      <details>
+        <summary>Raw /health, /v1/models, /v1/runtime JSON</summary>
+        <pre id="raw">Waiting for data…</pre>
+      </details>
+    </div>
+  </div>
+
+  <div class="footer">
+    <span>RustMoE status dashboard · <span id="apiBase"></span></span>
+    <span><a href="/health">/health</a> · <a href="/v1/models">/v1/models</a> · <a href="/metrics">/metrics</a> · <a href="/v1/runtime">/v1/runtime</a></span>
+  </div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+  var state = {
+    paused: false,
+    key: localStorage.getItem("rustmoe_status_key") || "",
+    hist: { ttft: [], decode: [] },
+    sysHist: { cpu: [], gpu: [], ram: [], vram: [] },
+    last: null,
+    timer: null,
+    busy: false
+  };
+  var $ = function (id) { return document.getElementById(id); };
+  var nf = new Intl.NumberFormat();
+  var nf1 = new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 });
+  var nf2 = new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 });
+
+  function fmtNum(n) {
+    if (n === null || n === undefined || isNaN(n)) return "—";
+    return nf.format(Math.round(n));
+  }
+  function fmtBytes(n) {
+    if (n === null || n === undefined || isNaN(n)) return "—";
+    var units = ["B", "KiB", "MiB", "GiB", "TiB"];
+    var v = Number(n), i = 0;
+    while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+    return (i === 0 ? nf.format(v) : nf2.format(v)) + " " + units[i];
+  }
+  function fmtMs(n) {
+    if (n === null || n === undefined || isNaN(n) || n === 0) return "—";
+    if (n >= 1000) return nf2.format(n / 1000) + " s";
+    return nf1.format(n) + " ms";
+  }
+  function fmtDuration(sec) {
+    if (sec === null || sec === undefined || isNaN(sec)) return "—";
+    sec = Math.max(0, Math.floor(sec));
+    var d = Math.floor(sec / 86400), h = Math.floor((sec % 86400) / 3600);
+    var m = Math.floor((sec % 3600) / 60), s = sec % 60;
+    if (d) return d + "d " + h + "h";
+    if (h) return h + "h " + m + "m";
+    if (m) return m + "m " + s + "s";
+    return s + "s";
+  }
+  function setText(id, value) { var el = $(id); if (el) el.textContent = value; }
+  function setBar(id, pct, cls) {
+    var el = $(id);
+    if (!el) return;
+    var span = el.firstElementChild;
+    if (span) span.style.width = Math.max(0, Math.min(100, pct || 0)) + "%";
+    el.className = "bar" + (cls ? " " + cls : "");
+  }
+  function setBadge(id, text, cls) {
+    var el = $(id);
+    if (!el) return;
+    el.textContent = text;
+    el.className = "badge" + (cls ? " " + cls : "");
+  }
+  function showAuth(show) { $("authbar").style.display = show ? "flex" : "none"; }
+  function showError(text) {
+    var el = $("errorbar");
+    el.textContent = text || "";
+    el.style.display = text ? "block" : "none";
+  }
+  function headers() {
+    var h = {};
+    if (state.key) h.Authorization = "Bearer " + state.key;
+    return h;
+  }
+  async function api(path) {
+    var r = await fetch(path, { headers: headers(), cache: "no-store" });
+    if (!r.ok) {
+      var e = new Error("HTTP " + r.status + " " + path);
+      e.status = r.status;
+      throw e;
+    }
+    return r.json();
+  }
+  function setConn(ok, text) {
+    setBadge("conn", text, ok ? "ok" : "err");
+    var el = $("conn");
+    if (el && !el.querySelector(".dot")) {
+      el.insertAdjacentHTML("afterbegin", '<span class="dot"></span>');
+    }
+    var dot = el && el.querySelector(".dot");
+    if (dot) dot.className = ok ? "dot live" : "dot";
+  }
+  function render(health, models, runtime, system, telemetry) {
+    var info = (runtime && runtime.runtime) || {};
+    var tel = telemetry || {};
+    var sys = tel.system || {};
+    var sysCpu = sys.cpu || {};
+    var sysMem = sys.memory || {};
+    var hw = (system && system.hardware) || {};
+    var liveGpus = sys.gpus || hw.gpus || [];
+    var planGpu = info.device_plan && info.device_plan.gpu_name;
+    var liveGpu = null;
+    for (var gi = 0; gi < liveGpus.length; gi++) {
+      if (planGpu && liveGpus[gi].name === planGpu) { liveGpu = liveGpus[gi]; break; }
+    }
+    if (!liveGpu && liveGpus.length) {
+      liveGpu = liveGpus.slice().sort(function (a, b) { return (b.memory_free || b.free_vram || 0) - (a.memory_free || a.free_vram || 0); })[0];
+    }
+    var metrics = (runtime && runtime.metrics) || {};
+    var plan = info.device_plan || null;
+    var mem = info.plan || null;
+    var model = (models && models.data && models.data[0]) || {};
+    var context = info.context || model.context_length || 0;
+    var contextMax = model.max_context_length || info.context_limit || 0;
+    var modelId = info.model_id || model.id || "unknown";
+    var backend = info.backend || health.backend || "unknown";
+    var simulation = !!(info.simulation !== undefined ? info.simulation : health.simulation);
+
+    var origin = window.location.origin;
+    var apiModel = info.model_id || model.id || "unknown";
+    var authRequired = health.auth_required === true || info.auth_required === true ||
+      ($("authbar") && $("authbar").style.display === "block");
+    setText("apiBase", origin);
+    setText("apiOpenAI", origin + "/v1");
+    setText("apiChat", origin + "/v1/chat/completions");
+    setText("apiModel", apiModel);
+    setText("apiAuth", authRequired ? "Bearer token required" : "none (public)");
+    var endpoints = [
+      ["/v1/models", origin + "/v1/models"],
+      ["/v1/chat/completions", origin + "/v1/chat/completions"],
+      ["/v1/completions", origin + "/v1/completions"],
+      ["/v1/agent/run", origin + "/v1/agent/run"],
+      ["/v1/telemetry", origin + "/v1/telemetry"],
+      ["/status", origin + "/status"]
+    ];
+    var list = $("apiEndpointList");
+    list.innerHTML = "";
+    endpoints.forEach(function (item) {
+      var a = document.createElement("a");
+      a.href = item[1];
+      a.textContent = item[0];
+      a.target = "_blank";
+      a.rel = "noreferrer";
+      list.appendChild(a);
+    });
+    var authLine = authRequired ? '  -H "Authorization: Bearer $RUSTMOE_API_KEY" \\\n' : "";
+    var body = JSON.stringify({ model: apiModel, messages: [{ role: "user", content: "Hello" }], max_tokens: 64 });
+    $("curlSnippet").textContent =
+      "curl -s " + origin + "/v1/chat/completions \\\n" +
+      '  -H "Content-Type: application/json" \\\n' +
+      authLine +
+      "  -d '" + body + "'";
+    $("agentSnippet").textContent =
+      "curl -N " + origin + "/v1/agent/run \\\n" +
+      '  -H "Content-Type: application/json" \\\n' +
+      authLine +
+      '  -d \'{"task":"Create a small project","workspace":".","max_steps":8}\'';
+
+    setText("model", modelId);
+    setText("subtitle", (info.architecture || model.rustmoe && model.rustmoe.architecture || "model") + " · " + (info.chat_format || "chat") + " · " + (info.model_path || "path unknown"));
+    setBadge("backend", "backend " + backend, simulation ? "warn" : "ok");
+    setBadge("mode", simulation ? "simulation" : "real inference", simulation ? "warn" : "ok");
+    setBadge("contextBadge", "context " + fmtNum(context), context >= 65536 ? "ok" : "warn");
+    setText("updated", "updated " + new Date().toLocaleTimeString());
+    setConn(true, "online");
+    setText("health", health.status || "—");
+    setText("uptime", fmtDuration(health.uptime_secs));
+    setText("requests", fmtNum(metrics.requests));
+    setText("active", fmtNum(metrics.active_requests));
+    setText("context", fmtNum(context));
+    setText("contextMax", fmtNum(contextMax));
+    setText("contextUsed", fmtNum(metrics.context_tokens) + " tokens");
+    setBar("contextBar", contextMax ? (context / contextMax) * 100 : 0, context >= 65536 ? "ok" : "warn");
+
+    var gpu = liveGpu ? liveGpu.name : (plan && plan.gpu_name) || (mem && mem.hardware && mem.hardware.gpus && mem.hardware.gpus[0] && mem.hardware.gpus[0].name) || "—";
+    var free = liveGpu ? (liveGpu.memory_free !== undefined ? liveGpu.memory_free : liveGpu.free_vram) : (plan ? plan.free_vram : (mem && mem.vram && mem.vram.free_reported) || 0);
+    var total = liveGpu ? (liveGpu.memory_total !== undefined ? liveGpu.memory_total : liveGpu.total_vram) : (plan ? plan.total_vram : (mem && mem.vram && mem.vram.total) || 0);
+    setText("gpuName", gpu);
+    setText("vramFree", fmtBytes(free));
+    setText("vramSub", "free of " + fmtBytes(total));
+    setText("headroom", plan ? fmtBytes(plan.predicted_headroom) : (mem ? fmtBytes(mem.vram.headroom) : "—"));
+    setBar("vramBar", total ? (free / total) * 100 : 0, total && free / total < .15 ? "warn" : "ok");
+
+    var cpuPct = sysCpu.usage_percent || 0;
+    var gpuPct = liveGpu && liveGpu.utilization_percent !== undefined ? liveGpu.utilization_percent : 0;
+    var ramTotal = sysMem.total || hw.total_ram || 0;
+    var ramUsed = sysMem.used || (ramTotal && hw.available_ram ? ramTotal - hw.available_ram : 0);
+    var ramPct = sysMem.usage_percent || (ramTotal ? ramUsed / ramTotal * 100 : 0);
+    setText("liveCpu", cpuPct > 0 ? nf1.format(cpuPct) + "%" : "—");
+    setText("liveCpuSub", (sysCpu.cores || "—") + " logical · " + (sysCpu.name || "CPU"));
+    setBar("liveCpuBar", cpuPct, cpuPct > 90 ? "warn" : "ok");
+    setText("liveGpu", liveGpu ? nf1.format(gpuPct) + "%" : "—");
+    var gpuExtra = [];
+    if (liveGpu && liveGpu.temperature_c) gpuExtra.push(nf1.format(liveGpu.temperature_c) + " °C");
+    if (liveGpu && liveGpu.power_w) gpuExtra.push(nf1.format(liveGpu.power_w) + " W");
+    setText("liveGpuSub", (liveGpu ? liveGpu.name : "GPU") + (gpuExtra.length ? " · " + gpuExtra.join(" · ") : ""));
+    setBar("liveGpuBar", gpuPct, gpuPct > 90 ? "warn" : "ok");
+    setText("liveRam", fmtBytes(ramUsed));
+    setText("liveRamSub", "of " + fmtBytes(ramTotal) + " · " + nf1.format(ramPct) + "%");
+    setBar("liveRamBar", ramPct, ramPct > 90 ? "warn" : "ok");
+
+    var act = tel.activity || {};
+    var phase = act.phase || "idle";
+    setBadge("livePhase", act.active ? phase : "idle", phase === "decode" ? "ok" : (phase === "prefill" ? "warn" : ""));
+    setText("livePrompt", fmtNum(act.prompt_tokens));
+    setText("liveGen", fmtNum(act.generated_tokens));
+    setText("liveElapsed", act.elapsed_ms ? fmtMs(act.elapsed_ms) : "0 ms");
+    setText("liveTps", act.tokens_per_second ? nf2.format(act.tokens_per_second) : "—");
+    setText("livePreview", act.preview || (act.active ? "generating…" : "waiting for a request…"));
+    state.sysHist.cpu.push(cpuPct);
+    state.sysHist.gpu.push(gpuPct);
+    state.sysHist.ram.push(ramPct);
+    state.sysHist.vram.push(total ? (1 - free / total) * 100 : 0);
+    Object.keys(state.sysHist).forEach(function (k) {
+      if (state.sysHist[k].length > 80) state.sysHist[k].shift();
+    });
+    drawSystemChart();
+
+
+    var decodeMean = metrics.decode && metrics.decode.mean_ms;
+    var prefillMs = (metrics.prefill && metrics.prefill.sum_ms) || 0;
+    var decodeMs = (metrics.decode && metrics.decode.sum_ms) || 0;
+    var promptTps = prefillMs > 0 ? (metrics.prompt_tokens || 0) / (prefillMs / 1000) : 0;
+    var overallTps = (prefillMs + decodeMs) > 0 ? (metrics.completion_tokens || 0) / ((prefillMs + decodeMs) / 1000) : 0;
+    var decodeTps = decodeMean && decodeMean >= 1 ? 1000 / decodeMean : 0;
+    var shownTps = decodeTps > 0 ? decodeTps : overallTps;
+    if (simulation) shownTps = 0;
+    setText("tokps", shownTps > 0 ? nf2.format(shownTps) : "—");
+    setText("tokpsSub", simulation ? "simulation backend" : (decodeTps > 0 ? "decode tokens / second" : "overall tokens / second"));
+    setText("ttft", metrics.ttft ? fmtMs(metrics.ttft.mean_ms) : "—");
+    setText("decodeMean", metrics.decode ? fmtMs(metrics.decode.mean_ms) : "—");
+    setText("promptTps", promptTps > 0 ? nf2.format(promptTps) : "—");
+    setText("completionTokens", fmtNum(metrics.completion_tokens));
+
+    setText("planMode", info.auto_device ? "automatic" : (plan ? "planned" : "manual / unknown"));
+    setText("gpuLayers", plan ? fmtNum(plan.gpu_expert_layers) : "—");
+    setText("hostLayers", plan ? fmtNum(plan.cpu_moe_layers) : "—");
+    setText("planCache", plan ? fmtNum(plan.moe_cache_mib) + " MiB" : "—");
+    setText("availableRam", fmtBytes(sysMem.available || hw.available_ram || (plan ? plan.available_ram : 0)));
+    var notes = $("planNotes");
+    notes.innerHTML = "";
+    if (plan && plan.notes) {
+      plan.notes.slice(0, 4).forEach(function (note) {
+        var s = document.createElement("span");
+        s.className = "chip";
+        s.textContent = note;
+        notes.appendChild(s);
+      });
+    }
+
+    var cache = (runtime && runtime.backend_cache) || metrics.backend_cache || null;
+    var hits = cache ? cache.hits : 0, misses = cache ? cache.misses : 0;
+    var rate = cache ? (hits + misses ? hits / (hits + misses) : 0) : 0;
+    setText("cacheRate", cache ? nf1.format(rate * 100) + "%" : "—");
+    setBar("cacheBar", rate * 100, rate > .2 ? "ok" : "warn");
+    setText("cacheHits", fmtNum(hits));
+    setText("cacheMisses", fmtNum(misses));
+    setText("cacheUploaded", cache ? fmtBytes(cache.uploaded_bytes) : "—");
+
+    setText("planStatus", mem ? String(mem.status || "—") : "—");
+    setText("memVram", mem ? fmtBytes(mem.vram.usable) + " usable" : "—");
+    setText("memRam", mem ? fmtBytes(mem.ram.available) + " available" : "—");
+    setText("memExpert", mem ? fmtBytes(mem.vram.expert_cache) : "—");
+    setText("memKv", mem ? fmtBytes(mem.vram.kv) : "—");
+
+    var warnings = (info.warnings || []);
+    var wl = $("warnings");
+    wl.innerHTML = "";
+    if (!warnings.length) {
+      wl.innerHTML = '<li class="empty">No warnings.</li>';
+    } else {
+      warnings.forEach(function (w) {
+        var li = document.createElement("li");
+        li.textContent = w;
+        wl.appendChild(li);
+      });
+    }
+
+    var recent = tel.recent || [];
+    var tbody = $("recent");
+    tbody.innerHTML = "";
+    if (!recent.length) {
+      tbody.innerHTML = '<tr><td colspan="7" class="empty">No completed requests.</td></tr>';
+    } else {
+      recent.forEach(function (r) {
+        var tr = document.createElement("tr");
+        var values = [
+          new Date((r.started_unix || 0) * 1000).toLocaleTimeString(),
+          fmtNum(r.prompt_tokens),
+          fmtNum(r.completion_tokens),
+          fmtMs(r.prefill_ms),
+          fmtMs(r.decode_ms),
+          nf2.format(r.tokens_per_second || 0),
+          r.ok ? "ok" : "failed"
+        ];
+        values.forEach(function (value) {
+          var td = document.createElement("td");
+          td.textContent = value;
+          tr.appendChild(td);
+        });
+        tbody.appendChild(tr);
+      });
+    }
+
+    setText("modelPath", info.model_path || "—");
+    setText("arch", info.architecture || "—");
+    setText("chatFormat", info.chat_format || "—");
+    setText("tensors", fmtNum(info.tensor_count));
+    setText("tensorBytes", fmtBytes(info.tensor_bytes));
+    setText("autoDevice", info.auto_device ? "yes" : "no");
+
+    if (metrics.ttft) state.hist.ttft.push(metrics.ttft.mean_ms || 0);
+    if (metrics.decode) state.hist.decode.push(metrics.decode.mean_ms || 0);
+    if (state.hist.ttft.length > 60) state.hist.ttft.shift();
+    if (state.hist.decode.length > 60) state.hist.decode.shift();
+    drawChart();
+    $("raw").textContent = JSON.stringify({ health: health, models: models, runtime: runtime, telemetry: telemetry }, null, 2);
+    setText("apiBase", location.origin);
+  }
+  function drawChart() {
+    var c = $("latency");
+    if (!c) return;
+    var ctx = c.getContext("2d");
+    var w = c.clientWidth || 900, h = 230;
+    var dpr = window.devicePixelRatio || 1;
+    c.width = w * dpr; c.height = h * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+    var pad = { l: 44, r: 12, t: 12, b: 22 };
+    var all = state.hist.ttft.concat(state.hist.decode);
+    var max = Math.max.apply(null, all.concat([1]));
+    ctx.strokeStyle = "#1a263b"; ctx.lineWidth = 1;
+    ctx.font = "10px ui-monospace, Consolas, monospace"; ctx.fillStyle = "#60718c";
+    for (var i = 0; i <= 4; i++) {
+      var y = pad.t + (h - pad.t - pad.b) * i / 4;
+      ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(w - pad.r, y); ctx.stroke();
+      ctx.fillText(nf1.format(max * (1 - i / 4)) + " ms", 2, y + 3);
+    }
+    function line(data, color) {
+      if (!data.length) return;
+      if (data.length === 1) {
+        var x0 = pad.l + (w - pad.l - pad.r) * 0.5;
+        var y0 = pad.t + (h - pad.t - pad.b) * (1 - data[0] / max);
+        ctx.beginPath(); ctx.fillStyle = color; ctx.arc(x0, y0, 3.5, 0, Math.PI * 2); ctx.fill();
+        return;
+      }
+      ctx.beginPath(); ctx.strokeStyle = color; ctx.lineWidth = 2;
+      data.forEach(function (v, i) {
+        var x = pad.l + (w - pad.l - pad.r) * (i / (data.length - 1));
+        var y = pad.t + (h - pad.t - pad.b) * (1 - v / max);
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+    }
+    line(state.hist.ttft, "#2dd4bf");
+    line(state.hist.decode, "#60a5fa");
+    if (!state.hist.ttft.length && !state.hist.decode.length) {
+      ctx.fillStyle = "#60718c"; ctx.font = "12px ui-sans-serif, system-ui";
+      ctx.fillText("Waiting for completed requests…", pad.l + 8, h / 2);
+    }
+  }
+  function drawSystemChart() {
+    var c = $("systemChart");
+    if (!c) return;
+    var ctx = c.getContext("2d");
+    var w = c.clientWidth || 1200, h = 180;
+    var dpr = window.devicePixelRatio || 1;
+    c.width = w * dpr; c.height = h * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+    var pad = { l: 40, r: 12, t: 10, b: 20 };
+    ctx.strokeStyle = "#1a263b"; ctx.lineWidth = 1;
+    ctx.font = "10px ui-monospace, Consolas, monospace"; ctx.fillStyle = "#60718c";
+    for (var i = 0; i <= 4; i++) {
+      var y = pad.t + (h - pad.t - pad.b) * i / 4;
+      ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(w - pad.r, y); ctx.stroke();
+      ctx.fillText((100 - i * 25) + "%", 2, y + 3);
+    }
+    function line(data, color) {
+      if (!data.length) return;
+      if (data.length === 1) {
+        var x0 = w - pad.r;
+        var y0 = pad.t + (h - pad.t - pad.b) * (1 - Math.min(100, Math.max(0, data[0])) / 100);
+        ctx.beginPath(); ctx.fillStyle = color; ctx.arc(x0, y0, 3, 0, Math.PI * 2); ctx.fill();
+        return;
+      }
+      ctx.beginPath(); ctx.strokeStyle = color; ctx.lineWidth = 1.8;
+      data.forEach(function (v, i) {
+        var x = pad.l + (w - pad.l - pad.r) * (i / (data.length - 1));
+        var y = pad.t + (h - pad.t - pad.b) * (1 - Math.min(100, Math.max(0, v)) / 100);
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+    }
+    line(state.sysHist.cpu, "#2dd4bf");
+    line(state.sysHist.gpu, "#60a5fa");
+    line(state.sysHist.ram, "#fbbf24");
+    line(state.sysHist.vram, "#f472b6");
+    if (!state.sysHist.cpu.length) {
+      ctx.fillStyle = "#60718c"; ctx.font = "12px ui-sans-serif, system-ui";
+      ctx.fillText("Waiting for telemetry…", pad.l + 8, h / 2);
+    }
+  }
+
+  document.querySelectorAll("button.copy").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var target = $(btn.getAttribute("data-copy"));
+      if (!target) return;
+      var text = target.textContent;
+      function done() {
+        var old = btn.textContent;
+        btn.textContent = "Copied";
+        setTimeout(function () { btn.textContent = old; }, 1200);
+      }
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(done).catch(function () {});
+      } else {
+        var range = document.createRange();
+        range.selectNodeContents(target);
+        var selection = window.getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+        document.execCommand("copy");
+        done();
+      }
+    });
+  });
+
+  async function refresh() {
+    if (state.busy) return;
+    state.busy = true;
+    var healthP = api("/health").catch(function (e) { return e; });
+    var modelsP = api("/v1/models").catch(function (e) { return e; });
+    var runtimeP = api("/v1/runtime").catch(function (e) { return e; });
+    var telemetryP = api("/v1/telemetry").catch(function (e) { return e; });
+    var results = await Promise.all([healthP, modelsP, runtimeP, telemetryP]);
+    var health = results[0], models = results[1], runtime = results[2], telemetry = results[3];
+    var runtimeError = runtime instanceof Error ? runtime : null;
+    if (runtimeError && runtimeError.status === 401) {
+      showAuth(true);
+      showError("");
+    } else if (runtimeError) {
+      showAuth(false);
+      showError(runtimeError.message);
+    } else {
+      showAuth(false);
+      showError("");
+    }
+    if (health instanceof Error) {
+      setConn(false, "offline");
+      showError("Cannot reach /health: " + health.message);
+    } else {
+      render(health, models instanceof Error ? {} : models, runtime instanceof Error ? {} : runtime, {}, telemetry instanceof Error ? {} : telemetry);
+    }
+    state.busy = false;
+  }
+  function schedule() {
+    if (state.timer) clearInterval(state.timer);
+    if (state.paused) return;
+    state.timer = setInterval(refresh, 1000);
+  }
+  $("pause").addEventListener("click", function () {
+    state.paused = !state.paused;
+    this.textContent = state.paused ? "Resume" : "Pause";
+    schedule();
+  });
+  $("refresh").addEventListener("click", refresh);
+  $("key").value = state.key;
+  $("key").addEventListener("change", function () {
+    state.key = this.value.trim();
+    localStorage.setItem("rustmoe_status_key", state.key);
+    refresh();
+  });
+  $("authapply").addEventListener("click", function () {
+    state.key = $("authkey").value.trim();
+    localStorage.setItem("rustmoe_status_key", state.key);
+    $("key").value = state.key;
+    showAuth(false);
+    refresh();
+  });
+  window.addEventListener("resize", function () { drawChart(); drawSystemChart(); });
+  refresh();
+  schedule();
+})();
+</script>
+</body>
+</html>

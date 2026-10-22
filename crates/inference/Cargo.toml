@@ -1,0 +1,18 @@
+[package]
+name = "rustmoe-inference"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Prefill, decode, sampling, and session orchestration"
+
+[dependencies]
+rustmoe-backend = { path = "../backend", version = "0.1.0" }
+rustmoe-model = { path = "../model", version = "0.1.0" }
+rustmoe-scheduler = { path = "../scheduler", version = "0.1.0" }
+rustmoe-expert-cache = { path = "../expert-cache", version = "0.1.0" }
+rustmoe-tokenizer = { path = "../tokenizer", version = "0.1.0" }
+rustmoe-telemetry = { path = "../telemetry", version = "0.1.0" }
+serde.workspace = true
+thiserror.workspace = true
+tokio.workspace = true

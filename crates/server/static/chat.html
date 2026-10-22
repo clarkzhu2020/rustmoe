@@ -1,0 +1,844 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RustMoE Chat</title>
+<style>
+:root {
+  --bg: #080c14; --bg2: #0d1422; --panel: #111927; --line: #22304a;
+  --text: #e7edf7; --muted: #8fa0ba; --dim: #60718c;
+  --accent: #2dd4bf; --accent2: #60a5fa; --user: #173044;
+  --mono: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  color: var(--text);
+  background: radial-gradient(900px 500px at 15% -10%, rgba(45,212,191,.12), transparent 60%),
+              radial-gradient(1000px 600px at 95% 0%, rgba(96,165,250,.10), transparent 60%),
+              linear-gradient(180deg, var(--bg), var(--bg2) 60%, #070b12);
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 14px; line-height: 1.5;
+}
+a { color: var(--muted); }
+.shell { display: flex; height: 100%; min-height: 0; }
+.sidebar {
+  width: 310px; flex: 0 0 310px; border-right: 1px solid var(--line);
+  background: rgba(9,14,23,.72); backdrop-filter: blur(12px); overflow-y: auto;
+  padding: 18px 16px;
+}
+.brand { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
+.mark { width: 36px; height: 36px; border-radius: 10px; display: grid; place-items: center;
+  background: linear-gradient(135deg, rgba(45,212,191,.25), rgba(96,165,250,.2));
+  border: 1px solid rgba(45,212,191,.4); color: var(--accent); font-weight: 800; }
+.brand h1 { margin: 0; font-size: 16px; }
+.brand small { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 1px; }
+.card { background: rgba(17,25,40,.8); border: 1px solid var(--line); border-radius: 12px; padding: 12px; margin-bottom: 12px; }
+.card h3 { margin: 0 0 10px; font-size: 10px; text-transform: uppercase; letter-spacing: 1.2px; color: var(--dim); }
+.row { display: flex; justify-content: space-between; gap: 10px; font-size: 12px; margin: 6px 0; }
+.row span:first-child { color: var(--muted); }
+.row span:last-child { font-family: var(--mono); text-align: right; }
+label { display: block; color: var(--muted); font-size: 11px; margin: 9px 0 4px; }
+input, textarea, select, button {
+  font: inherit; color: var(--text); background: rgba(255,255,255,.04);
+  border: 1px solid var(--line); border-radius: 8px; padding: 7px 9px; outline: none;
+}
+textarea { resize: vertical; }
+button { cursor: pointer; }
+button:hover { border-color: #385073; background: rgba(255,255,255,.07); }
+button.primary { background: var(--accent); color: #04231f; border-color: var(--accent); font-weight: 700; }
+button.primary:hover { background: #5eead4; }
+button.danger { color: #fca5a5; border-color: rgba(248,113,113,.4); }
+button:disabled { opacity: .45; cursor: not-allowed; }
+input, select { width: 100%; }
+.range { width: 100%; }
+.badge { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 999px;
+  border: 1px solid var(--line); color: var(--muted); font-size: 11px; }
+.badge.ok { color: var(--ok); border-color: rgba(52,211,153,.35); background: rgba(52,211,153,.08); }
+.badge.warn { color: #fbbf24; border-color: rgba(251,191,36,.35); background: rgba(251,191,36,.08); }
+.badge.err { color: #f87171; border-color: rgba(248,113,113,.35); background: rgba(248,113,113,.08); }
+.dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; box-shadow: 0 0 10px currentColor; }
+.main { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; }
+.top {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 13px 20px; border-bottom: 1px solid var(--line);
+  background: rgba(9,14,23,.65); backdrop-filter: blur(10px);
+}
+.top h2 { margin: 0; font-size: 15px; }
+.top .meta { color: var(--muted); font-size: 12px; }
+.messages { flex: 1; overflow-y: auto; padding: 22px 20px 12px; }
+.thread { max-width: 900px; margin: 0 auto; }
+.msg { display: flex; gap: 10px; margin-bottom: 18px; }
+.avatar { width: 30px; height: 30px; border-radius: 9px; flex: 0 0 30px; display: grid; place-items: center;
+  font-size: 10px; font-weight: 700; border: 1px solid var(--line); color: var(--muted); background: #111927; }
+.msg.user .avatar { color: var(--accent); border-color: rgba(45,212,191,.35); }
+.bubble { min-width: 0; max-width: calc(100% - 44px); padding: 10px 13px; border-radius: 12px;
+  border: 1px solid var(--line); background: rgba(17,25,40,.75); white-space: pre-wrap; word-break: break-word; }
+.msg.user .bubble { background: var(--user); border-color: #22405a; }
+.bubble.error { border-color: rgba(248,113,113,.4); color: #fca5a5; }
+.bubble .text { font-size: 14px; }
+.typing { color: var(--dim); font-size: 12px; margin-top: 6px; }
+.sessions-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.sessions-head h3 { margin: 0; }
+button.mini { padding: 3px 7px; font-size: 10px; border-radius: 6px; }
+.sessions { display: flex; flex-direction: column; gap: 6px; max-height: 260px; overflow-y: auto; }
+.sessions.busy .session-item { pointer-events: none; opacity: .55; }
+.sessions.busy .session-item.active { pointer-events: none; }
+.session-item { position: relative; display: flex; flex-direction: column; gap: 2px; padding: 7px 8px; border: 1px solid var(--line); border-radius: 8px; cursor: pointer; background: rgba(255,255,255,.025); }
+.session-item:hover { border-color: #385073; background: rgba(255,255,255,.05); }
+.session-item.active { border-color: rgba(45,212,191,.55); background: rgba(45,212,191,.07); }
+.session-title { color: var(--text); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding-right: 42px; }
+.session-meta { color: var(--dim); font-size: 9px; }
+.session-actions { position: absolute; top: 5px; right: 5px; display: flex; gap: 2px; opacity: 0; }
+.session-item:hover .session-actions, .session-item.active .session-actions { opacity: 1; }
+.session-actions button { padding: 1px 4px; font-size: 9px; border: 0; color: var(--dim); background: transparent; }
+.session-actions button:hover { color: var(--text); }
+.sessions .empty-session { color: var(--dim); font-size: 11px; }
+.check { display: flex; align-items: center; gap: 7px; margin: 8px 0 0; color: var(--muted); font-size: 11px; }
+.check input { width: auto; }
+.composer { border-top: 1px solid var(--line); padding: 14px 20px 18px; background: rgba(9,14,23,.72); }
+.composer-inner { max-width: 900px; margin: 0 auto; }
+.composer textarea { width: 100%; min-height: 52px; max-height: 220px; resize: none; padding: 11px 12px; }
+.composer-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 8px; }
+.hint { color: var(--dim); font-size: 11px; }
+.statusline { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+.errorbar { display: none; max-width: 900px; margin: 0 auto 10px; padding: 8px 11px; border-radius: 8px;
+  border: 1px solid rgba(248,113,113,.35); background: rgba(248,113,113,.08); color: #fca5a5; font-size: 12px; }
+@media (max-width: 860px) {
+  .sidebar { display: none; }
+  .sidebar.open { display: block; position: fixed; z-index: 20; height: 100%; }
+  .top { padding: 11px 14px; }
+  .messages { padding: 16px 12px; }
+  .composer { padding: 10px 12px 14px; }
+}
+</style>
+</head>
+<body>
+<div class="shell">
+  <aside class="sidebar" id="sidebar">
+    <div class="brand">
+      <div class="mark">RM</div>
+      <div><h1>RustMoE Chat</h1><small>DeepSeek-V4.1 local</small></div>
+    </div>
+
+    <div class="card">
+      <div class="sessions-head">
+        <h3>Sessions</h3>
+        <button id="sessionNew" class="mini">+ New</button>
+      </div>
+      <div id="sessionList" class="sessions"></div>
+    </div>
+
+    <div class="card">
+      <h3>Runtime</h3>
+      <div class="row"><span>status</span><span><span id="conn" class="badge"><span class="dot"></span><span id="connText">connecting</span></span></span></div>
+      <div class="row"><span>model</span><span id="modelName">—</span></div>
+      <div class="row"><span>context</span><span id="context">—</span></div>
+      <div class="row"><span>backend</span><span id="backend">—</span></div>
+      <div class="row"><span>phase</span><span id="phase">idle</span></div>
+      <div class="row"><span>GPU</span><span id="gpu">—</span></div>
+      <div class="row"><span>CPU</span><span id="cpu">—</span></div>
+      <div class="row"><span>live tok/s</span><span id="liveTps">—</span></div>
+    </div>
+
+    <div class="card">
+      <h3>Generation</h3>
+      <label for="system">System prompt</label>
+      <textarea id="system" rows="3">You are a helpful assistant.</textarea>
+      <label for="temp">Temperature <span id="tempVal">0.7</span></label>
+      <input class="range" id="temp" type="range" min="0" max="2" step="0.05" value="0.7">
+      <label for="topp">Top-p <span id="toppVal">0.95</span></label>
+      <input class="range" id="topp" type="range" min="0.05" max="1" step="0.05" value="0.95">
+      <label for="maxtok">Max new tokens <span id="maxHint">(auto 8192–262144)</span></label>
+      <input id="maxtok" type="number" min="8192" max="262144" step="1024" value="8192">
+      <label class="check"><input id="autotokens" type="checkbox" checked> Auto size from prompt</label>
+      <label class="check"><input id="autocontinue" type="checkbox" checked> Auto-continue on length</label>
+      <label for="key">API key (optional)</label>
+      <input id="key" type="password" autocomplete="off" placeholder="Bearer token">
+    </div>
+
+    <div class="card">
+      <h3>Links</h3>
+      <div class="row"><span>agent</span><span><a href="/agent">/agent</a></span></div>
+      <div class="row"><span>status</span><span><a href="/status">/status</a></span></div>
+      <div class="row"><span>metrics</span><span><a href="/metrics">/metrics</a></span></div>
+      <div class="row"><span>models</span><span><a href="/v1/models">/v1/models</a></span></div>
+    </div>
+
+    <div class="hint">Local inference. Long prompts can take minutes before the first token. Your text never leaves this machine.</div>
+  </aside>
+
+  <main class="main">
+    <header class="top">
+      <div>
+        <h2 id="title">DeepSeek-V4.1</h2>
+        <div class="meta" id="subtitle">local OpenAI-compatible chat</div>
+      </div>
+      <div class="statusline">
+        <button id="sidebarToggle" class="badge" style="display:none">Settings</button>
+        <span class="badge" id="topBadge"><span class="dot"></span><span id="topBadgeText">connecting</span></span>
+        <a class="badge" href="/status">Status</a>
+      </div>
+    </header>
+
+    <div class="messages" id="messages"><div class="thread" id="thread"></div></div>
+
+    <div class="composer">
+      <div class="errorbar" id="errorbar"></div>
+      <div class="composer-inner">
+        <textarea id="prompt" placeholder="Message DeepSeek-V4.1…  (Enter to send, Shift+Enter for newline)"></textarea>
+        <div class="composer-row">
+          <span class="hint" id="composerHint">Ready</span>
+          <div style="display:flex;gap:8px">
+            <button id="newChat">New</button>
+            <button id="stop" class="danger" disabled>Stop</button>
+            <button id="send" class="primary">Send</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+<script>
+(function () {
+  "use strict";
+  var state = {
+    history: [],
+    busy: false,
+    ctrl: null,
+    key: localStorage.getItem("rustmoe_chat_key") || "",
+    model: "deepseek-v4.1-flash-1017",
+    context: 0,
+    telemetryTimer: null,
+    autoMax: true,
+    autoContinue: true,
+    sessions: [],
+    currentId: null,
+    storageKey: "rustmoe_chat_sessions_v1"
+  };
+  var $ = function (id) { return document.getElementById(id); };
+  var thread = $("thread");
+
+  function newId() {
+    return "s-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 7);
+  }
+  function blankSession() {
+    return { id: newId(), title: "New chat", createdAt: Date.now(), updatedAt: Date.now(), messages: [] };
+  }
+  function currentSession() {
+    for (var i = 0; i < state.sessions.length; i++) {
+      if (state.sessions[i].id === state.currentId) return state.sessions[i];
+    }
+    return null;
+  }
+  function saveSessions() {
+    try {
+      localStorage.setItem(state.storageKey, JSON.stringify({
+        version: 1, current: state.currentId, sessions: state.sessions
+      }));
+    } catch (e) {
+      showError("Session storage is full; delete old sessions to save new messages.");
+    }
+  }
+  function loadSessions() {
+    var data = null;
+    try { data = JSON.parse(localStorage.getItem(state.storageKey) || "null"); } catch (e) {}
+    if (data && Array.isArray(data.sessions) && data.sessions.length) {
+      state.sessions = data.sessions.filter(function (s) {
+        return s && typeof s.id === "string" && Array.isArray(s.messages);
+      }).map(function (s) {
+        return {
+          id: s.id,
+          title: s.title || "New chat",
+          createdAt: s.createdAt || Date.now(),
+          updatedAt: s.updatedAt || Date.now(),
+          messages: s.messages.filter(function (m) {
+            return m && (m.role === "user" || m.role === "assistant") && typeof m.content === "string";
+          })
+        };
+      });
+      state.currentId = data.current || (state.sessions[0] && state.sessions[0].id);
+    }
+    if (!state.sessions.length) {
+      var s = blankSession();
+      state.sessions.push(s);
+      state.currentId = s.id;
+    }
+    if (!currentSession()) state.currentId = state.sessions[0].id;
+    state.history = currentSession().messages;
+    renderSessions();
+    renderCurrentSession();
+  }
+  function syncSession() {
+    var s = currentSession();
+    if (!s) return;
+    s.messages = state.history;
+    s.updatedAt = Date.now();
+    saveSessions();
+    renderSessions();
+  }
+  function autoTitle(text) {
+    var s = currentSession();
+    if (!s) return;
+    if (!s.title || s.title === "New chat") {
+      s.title = text.replace(/\s+/g, " ").trim().slice(0, 48) || "New chat";
+    }
+  }
+  function formatAgo(ts) {
+    var seconds = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+    if (seconds < 60) return "just now";
+    if (seconds < 3600) return Math.floor(seconds / 60) + "m ago";
+    if (seconds < 86400) return Math.floor(seconds / 3600) + "h ago";
+    return Math.floor(seconds / 86400) + "d ago";
+  }
+  function renderSessions() {
+    var list = $("sessionList");
+    list.innerHTML = "";
+    var ordered = state.sessions.slice().sort(function (a, b) { return b.updatedAt - a.updatedAt; });
+    ordered.forEach(function (s) {
+      var item = document.createElement("div");
+      item.className = "session-item" + (s.id === state.currentId ? " active" : "");
+      item.addEventListener("click", function () { selectSession(s.id); });
+      var title = document.createElement("div");
+      title.className = "session-title";
+      title.textContent = s.title || "New chat";
+      var meta = document.createElement("div");
+      meta.className = "session-meta";
+      meta.textContent = s.messages.length + " msgs · " + formatAgo(s.updatedAt);
+      var actions = document.createElement("div");
+      actions.className = "session-actions";
+      var rename = document.createElement("button");
+      rename.textContent = "rename";
+      rename.title = "Rename session";
+      rename.addEventListener("click", function (e) { e.stopPropagation(); renameSession(s.id); });
+      var del = document.createElement("button");
+      del.textContent = "delete";
+      del.title = "Delete session";
+      del.addEventListener("click", function (e) { e.stopPropagation(); deleteSession(s.id); });
+      actions.appendChild(rename);
+      actions.appendChild(del);
+      item.appendChild(title);
+      item.appendChild(meta);
+      item.appendChild(actions);
+      list.appendChild(item);
+    });
+  }
+  function renderCurrentSession() {
+    thread.innerHTML = "";
+    var s = currentSession();
+    if (!s || !s.messages.length) {
+      addMessage("assistant", "Local DeepSeek-V4.1 chat. Long prompts can take minutes before the first token; replies stream as they are generated.");
+      return;
+    }
+    s.messages.forEach(function (m) { addMessage(m.role, m.content); });
+  }
+  function selectSession(id) {
+    if (state.busy) { showError("Stop the current generation before switching sessions."); return; }
+    if (id === state.currentId) return;
+    state.currentId = id;
+    state.history = currentSession().messages;
+    showError("");
+    renderSessions();
+    renderCurrentSession();
+    saveSessions();
+    $("prompt").focus();
+  }
+  function createSession() {
+    if (state.busy) { showError("Stop the current generation before creating a new session."); return; }
+    var s = blankSession();
+    state.sessions.push(s);
+    state.currentId = s.id;
+    state.history = s.messages;
+    showError("");
+    renderSessions();
+    renderCurrentSession();
+    saveSessions();
+    $("prompt").focus();
+  }
+  function deleteSession(id) {
+    if (state.busy) return;
+    var s = state.sessions.find(function (x) { return x.id === id; });
+    if (!s) return;
+    if (!confirm("Delete session \"" + (s.title || "New chat") + "\"?")) return;
+    state.sessions = state.sessions.filter(function (x) { return x.id !== id; });
+    if (!state.sessions.length) {
+      var fresh = blankSession();
+      state.sessions.push(fresh);
+      state.currentId = fresh.id;
+    } else if (state.currentId === id) {
+      state.currentId = state.sessions[0].id;
+    }
+    state.history = currentSession().messages;
+    renderSessions();
+    renderCurrentSession();
+    saveSessions();
+  }
+  function renameSession(id) {
+    var s = state.sessions.find(function (x) { return x.id === id; });
+    if (!s) return;
+    var title = prompt("Session name", s.title || "New chat");
+    if (title === null) return;
+    title = title.trim().slice(0, 80);
+    if (!title) title = "New chat";
+    s.title = title;
+    s.updatedAt = Date.now();
+    renderSessions();
+    saveSessions();
+  }
+
+  function contextCap() {
+    var ctx = state.context || 131072;
+    var promptChars = ($("system").value || "").length + ($("prompt").value || "").length;
+    return Math.max(1024, ctx - Math.ceil(promptChars / 1.8) - 1024);
+  }
+  function estimateTaskTokens(text) {
+    var chars = Array.from(text || "").length;
+    var t = 8192;
+    if (/html|css|javascript|js|游戏|完整|项目|系统|实现|前端|后端|数据库|多文件|部署|算法|爬虫|程序/i.test(text)) {
+      t = 12288;
+    }
+    if (/完整项目|多文件|前后端|数据库|部署|从零|全部功能|所有功能|管理系统|商城|编译器|操作系统|小说|论文/i.test(text)) {
+      t = Math.max(t, 16384);
+    }
+    if (chars > 500) t = Math.max(t, 16384);
+    if (chars > 1500) t = Math.max(t, 24576);
+    if (chars > 3000) t = Math.max(t, 32768);
+    if (chars > 8000) t = Math.max(t, 49152);
+    if (chars > 16000) t = Math.max(t, 65536);
+    if (chars > 32000) t = Math.max(t, 98304);
+    if (chars > 64000) t = Math.max(t, 131072);
+    if (chars > 100000) t = Math.max(t, 196608);
+    if (chars > 160000) t = Math.max(t, 262144);
+    return Math.min(t, 262144, contextCap());
+  }
+  function applyAutoTokens() {
+    if (!$("autotokens").checked) return;
+    var value = estimateTaskTokens($("prompt").value);
+    $("maxtok").value = String(value);
+    $("maxHint").textContent = "(auto " + value.toLocaleString() + ")";
+  }
+  function headers() {
+    var h = { "Content-Type": "application/json" };
+    if (state.key) h.Authorization = "Bearer " + state.key;
+    return h;
+  }
+  function setConn(ok, text) {
+    ["conn", "topBadge"].forEach(function (id) {
+      var el = $(id);
+      if (!el) return;
+      el.className = "badge " + (ok ? "ok" : "err");
+      var t = $(id === "conn" ? "connText" : "topBadgeText");
+      if (t) t.textContent = text;
+    });
+  }
+  function showError(text) {
+    var el = $("errorbar");
+    el.textContent = text || "";
+    el.style.display = text ? "block" : "none";
+  }
+  function scrollBottom() {
+    var box = $("messages");
+    box.scrollTop = box.scrollHeight;
+  }
+  function addMessage(role, text, isError) {
+    var wrap = document.createElement("div");
+    wrap.className = "msg " + role;
+    var avatar = document.createElement("div");
+    avatar.className = "avatar";
+    avatar.textContent = role === "user" ? "YOU" : "AI";
+    var bubble = document.createElement("div");
+    bubble.className = "bubble" + (isError ? " error" : "");
+    var body = document.createElement("div");
+    body.className = "text";
+    body.textContent = text || "";
+    bubble.appendChild(body);
+    wrap.appendChild(avatar);
+    wrap.appendChild(bubble);
+    thread.appendChild(wrap);
+    scrollBottom();
+    return { wrap: wrap, bubble: bubble, body: body };
+  }
+  function addTyping() {
+    var wrap = document.createElement("div");
+    wrap.className = "msg assistant";
+    wrap.id = "typingRow";
+    var avatar = document.createElement("div");
+    avatar.className = "avatar";
+    avatar.textContent = "AI";
+    var bubble = document.createElement("div");
+    bubble.className = "bubble";
+    bubble.innerHTML = '<div class="typing" id="typingText">prefill / waiting for first token…</div>';
+    wrap.appendChild(avatar);
+    wrap.appendChild(bubble);
+    thread.appendChild(wrap);
+    scrollBottom();
+  }
+  function removeTyping() {
+    var el = $("typingRow");
+    if (el) el.remove();
+  }
+  async function loadInfo() {
+    try {
+      var r = await fetch("/v1/models", { cache: "no-store" });
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      var j = await r.json();
+      var m = j.data && j.data[0];
+      if (m) {
+        state.model = m.id || state.model;
+        state.context = m.context_length || 0;
+        $("modelName").textContent = state.model;
+        $("context").textContent = state.context ? state.context.toLocaleString() : "—";
+        $("title").textContent = state.model;
+        $("subtitle").textContent = "context " + (state.context ? state.context.toLocaleString() : "—") + " · local";
+      }
+      setConn(true, "online");
+    } catch (e) {
+      setConn(false, "offline");
+      showError("Cannot reach server: " + e.message);
+    }
+  }
+  async function pollTelemetry() {
+    try {
+      var r = await fetch("/v1/telemetry", { headers: headers(), cache: "no-store" });
+      if (r.status === 401) { $("phase").textContent = "key required"; return; }
+      if (!r.ok) return;
+      var t = await r.json();
+      var a = t.activity || {};
+      var sys = t.system || {};
+      var g = (sys.gpus || [])[0];
+      $("phase").textContent = a.active ? (a.phase || "active") : "idle";
+      $("liveTps").textContent = a.tokens_per_second ? a.tokens_per_second.toFixed(2) : "—";
+      if (g) $("gpu").textContent = (g.utilization_percent || 0).toFixed(0) + "% · " + Math.round(g.memory_used / 1073741824) + "/" + Math.round(g.memory_total / 1073741824) + " GiB";
+      if (sys.cpu) $("cpu").textContent = (sys.cpu.usage_percent || 0).toFixed(0) + "% · " + (sys.cpu.cores || "?") + " threads";
+      $("backend").textContent = "llama.cpp";
+    } catch (e) { /* do not disturb chat */ }
+  }
+  function setBusy(busy) {
+    state.busy = busy;
+    $("send").disabled = busy;
+    $("newChat").disabled = busy;
+    $("sessionNew").disabled = busy;
+    $("stop").disabled = !busy;
+    $("sessionList").classList.toggle("busy", busy);
+    $("prompt").disabled = false;
+    $("composerHint").textContent = busy
+      ? "generating… you can paste the next message now"
+      : (($("prompt").value.length || 0) + " chars · Ready");
+  }
+  function cleanText(value) {
+    return String(value || "")
+      .replace(/\u0000/g, "")
+      .replace(/[\u200B-\u200D\uFEFF]/g, "")
+      .replace(/\r\n?/g, "\n")
+      .trim();
+  }
+  function saveAssistant(full) {
+    if (!full) { syncSession(); return; }
+    var last = state.history[state.history.length - 1];
+    if (last && last.role === "assistant") last.content = full;
+    else state.history.push({ role: "assistant", content: full });
+    syncSession();
+  }
+  async function continueRound(assistant, accumulated, maxTokens) {
+    var messages = [];
+    var sys = $("system").value.trim();
+    if (sys) messages.push({ role: "system", content: sys });
+    messages = messages.concat(state.history);
+    messages.push({
+      role: "user",
+      content: "Continue exactly where your previous message stopped. Do not repeat any code or text. Start with the next line."
+    });
+    var payload = {
+      model: state.model,
+      messages: messages.map(function (m) {
+        return {
+          role: m.role,
+          content: typeof m.content === "string" ? m.content : (m.content == null ? "" : String(m.content))
+        };
+      }),
+      max_tokens: maxTokens,
+      temperature: parseFloat($("temp").value),
+      top_p: parseFloat($("topp").value),
+      stream: true
+    };
+    addTyping();
+    var full = accumulated;
+    var first = true;
+    var finish = null;
+    try {
+      var r = await fetch("/v1/chat/completions", {
+        method: "POST",
+        headers: headers(),
+        body: JSON.stringify(payload),
+        signal: state.ctrl.signal
+      });
+      if (!r.ok) {
+        var detail = "";
+        try { detail = (await r.json()).error.message; } catch (e) {}
+        throw new Error("HTTP " + r.status + (detail ? ": " + detail : ""));
+      }
+      var reader = r.body.getReader();
+      var decoder = new TextDecoder();
+      var buffer = "";
+      while (true) {
+        var part = await reader.read();
+        if (part.done) break;
+        buffer += decoder.decode(part.value, { stream: true });
+        var idx;
+        while ((idx = buffer.indexOf("\n\n")) >= 0) {
+          var block = buffer.slice(0, idx);
+          buffer = buffer.slice(idx + 2);
+          var lines = block.split("\n");
+          for (var li = 0; li < lines.length; li++) {
+            var line = lines[li].replace(/\r$/, "");
+            if (line.indexOf("data:") !== 0) continue;
+            var data = line.slice(5).trim();
+            if (data === "[DONE]") continue;
+            var obj;
+            try { obj = JSON.parse(data); } catch (e) { continue; }
+            if (obj.error) throw new Error(obj.error.message || "server error");
+            var choice = obj.choices && obj.choices[0];
+            if (!choice) continue;
+            if (choice.finish_reason) finish = choice.finish_reason;
+            var out = (choice.delta || {}).content;
+            if (out) {
+              if (first) { removeTyping(); first = false; }
+              full += out;
+              assistant.body.textContent = full;
+              scrollBottom();
+            }
+          }
+        }
+      }
+      removeTyping();
+      saveAssistant(full);
+      return { text: full, finishReason: finish };
+    } catch (e) {
+      removeTyping();
+      assistant.body.textContent = full;
+      saveAssistant(full);
+      throw e;
+    }
+  }
+
+  async function send(forcedText) {
+    if (state.busy) return;
+    var forced = typeof forcedText === "string" ? forcedText : null;
+    var text = cleanText(forced || $("prompt").value);
+    if (!text) return;
+    if ($("autotokens").checked) applyAutoTokens();
+    if (!forced) $("prompt").value = "";
+    var target = parseInt($("maxtok").value, 10) || 8192;
+    target = Math.max(1024, Math.min(target, contextCap()));
+    showError("");
+    addMessage("user", text);
+    state.history.push({ role: "user", content: text });
+    autoTitle(text);
+    syncSession();
+    var assistant = addMessage("assistant", "");
+    assistant.body.textContent = "";
+    addTyping();
+    setBusy(true);
+    state.ctrl = new AbortController();
+    var payload = {
+      model: state.model,
+      messages: [],
+      max_tokens: target,
+      temperature: parseFloat($("temp").value),
+      top_p: parseFloat($("topp").value),
+      stream: true
+    };
+    var sys = $("system").value.trim();
+    if (sys) payload.messages.push({ role: "system", content: sys });
+    payload.messages = payload.messages.concat(state.history).map(function (m) {
+      return {
+        role: m.role,
+        content: typeof m.content === "string" ? m.content : (m.content == null ? "" : String(m.content))
+      };
+    });
+    var full = "";
+    var finishReason = null;
+    try {
+      var r = await fetch("/v1/chat/completions", {
+        method: "POST",
+        headers: headers(),
+        body: JSON.stringify(payload),
+        signal: state.ctrl.signal
+      });
+      if (!r.ok) {
+        var detail = "";
+        try { detail = (await r.json()).error.message; } catch (e) {}
+        throw new Error("HTTP " + r.status + (detail ? ": " + detail : ""));
+      }
+      var reader = r.body.getReader();
+      var decoder = new TextDecoder();
+      var buffer = "";
+      var first = true;
+      while (true) {
+        var part = await reader.read();
+        if (part.done) break;
+        buffer += decoder.decode(part.value, { stream: true });
+        var idx;
+        while ((idx = buffer.indexOf("\n\n")) >= 0) {
+          var block = buffer.slice(0, idx);
+          buffer = buffer.slice(idx + 2);
+          var lines = block.split("\n");
+          for (var li = 0; li < lines.length; li++) {
+            var line = lines[li].replace(/\r$/, "");
+            if (line.indexOf("data:") !== 0) continue;
+            var data = line.slice(5).trim();
+            if (data === "[DONE]") continue;
+            var obj;
+            try { obj = JSON.parse(data); } catch (e) { continue; }
+            if (obj.error) throw new Error(obj.error.message || "server error");
+            var choice = obj.choices && obj.choices[0];
+            if (!choice) continue;
+            if (choice.finish_reason) finishReason = choice.finish_reason;
+            var delta = choice.delta || {};
+            var out = delta.content;
+            if (out) {
+              if (first) { removeTyping(); first = false; }
+              full += out;
+              assistant.body.textContent = full;
+              scrollBottom();
+            }
+          }
+        }
+      }
+      removeTyping();
+      if (!full) assistant.body.textContent = "(empty response)";
+      saveAssistant(full);
+      assistant.body.textContent = full;
+      var auto = $("autocontinue").checked;
+      var rounds = 0;
+      while (finishReason === "length" && auto) {
+        if (!state.ctrl || state.ctrl.signal.aborted) break;
+        var ctx = state.context || 131072;
+        var approx = Math.ceil(JSON.stringify(state.history).length / 1.8);
+        if (approx + target + 1024 >= ctx) break;
+        if (rounds >= 24) break;
+        rounds += 1;
+        $("composerHint").textContent = "auto-continue " + rounds + " · generating…";
+        var contResult = await continueRound(assistant, full, target);
+        full = contResult.text;
+        finishReason = contResult.finishReason;
+        if (finishReason !== "length") break;
+      }
+      if (finishReason === "length") {
+        var note = document.createElement("div");
+        note.className = "typing";
+        note.textContent = "Stopped at max_tokens (" + target + ")" +
+          (rounds ? " after " + rounds + " auto-continue rounds" : "") +
+          ". The answer may be incomplete.";
+        var cont = document.createElement("button");
+        cont.textContent = "Continue";
+        cont.style.marginTop = "8px";
+        cont.addEventListener("click", function () {
+          send("Continue exactly where you stopped. Do not repeat any code or text. Start with the next line.");
+        });
+        assistant.bubble.appendChild(note);
+        assistant.bubble.appendChild(cont);
+        scrollBottom();
+      }
+    } catch (e) {
+      removeTyping();
+      if (e.name === "AbortError") {
+        assistant.body.textContent = full + "\n\n[stopped]";
+        saveAssistant(full);
+      } else {
+        assistant.bubble.classList.add("error");
+        assistant.body.textContent = "Error: " + e.message;
+        showError(e.message);
+        saveAssistant(full);
+      }
+    } finally {
+      setBusy(false);
+      state.ctrl = null;
+      $("prompt").focus();
+      scrollBottom();
+    }
+  }
+  $("send").addEventListener("click", function () { send(); });
+  $("prompt").addEventListener("keydown", function (e) {
+    if (e.key === "Enter" && !e.shiftKey) {
+      if (state.busy) return;
+      e.preventDefault();
+      send();
+    }
+  });
+  function updateComposerHint() {
+    var n = $("prompt").value.length;
+    $("composerHint").textContent = state.busy
+      ? n + " chars queued · generating…"
+      : n + " chars · Ready";
+  }
+  $("prompt").addEventListener("input", function () {
+    updateComposerHint();
+    applyAutoTokens();
+  });
+  $("prompt").addEventListener("paste", function () {
+    setTimeout(function () { updateComposerHint(); applyAutoTokens(); }, 0);
+  });
+  document.addEventListener("paste", function (e) {
+    var el = document.activeElement;
+    if (el && (el.tagName === "TEXTAREA" || el.tagName === "INPUT")) return;
+    var text = (e.clipboardData || window.clipboardData).getData("text");
+    if (!text) return;
+    e.preventDefault();
+    $("prompt").value += text;
+    $("prompt").focus();
+    updateComposerHint();
+  });
+  $("stop").addEventListener("click", function () {
+    if (state.ctrl) state.ctrl.abort();
+  });
+  $("newChat").addEventListener("click", function () { createSession(); });
+  $("sessionNew").addEventListener("click", createSession);
+  ["temp", "topp"].forEach(function (id) {
+    $(id).addEventListener("input", function () {
+      $(id + "Val").textContent = this.value;
+    });
+  });
+  $("autotokens").addEventListener("change", function () {
+    state.autoMax = this.checked;
+    $("maxtok").readOnly = this.checked;
+    if (this.checked) applyAutoTokens();
+    else $("maxHint").textContent = "(manual 8192–262144)";
+  });
+  $("maxtok").addEventListener("input", function () {
+    $("autotokens").checked = false;
+    state.autoMax = false;
+    this.readOnly = false;
+    $("maxHint").textContent = "(manual 8192–262144)";
+  });
+  $("autocontinue").addEventListener("change", function () {
+    state.autoContinue = this.checked;
+  });
+  $("maxtok").readOnly = $("autotokens").checked;
+  applyAutoTokens();
+  $("key").value = state.key;
+  $("key").addEventListener("change", function () {
+    state.key = this.value.trim();
+    localStorage.setItem("rustmoe_chat_key", state.key);
+    pollTelemetry();
+  });
+  $("sidebarToggle").addEventListener("click", function () {
+    $("sidebar").classList.toggle("open");
+  });
+  if (window.innerWidth <= 860) {
+    $("sidebarToggle").style.display = "inline-flex";
+  }
+  window.addEventListener("resize", function () {
+    $("sidebarToggle").style.display = window.innerWidth <= 860 ? "inline-flex" : "none";
+    if (window.innerWidth > 860) $("sidebar").classList.remove("open");
+  });
+  loadSessions();
+  loadInfo();
+  pollTelemetry();
+  state.telemetryTimer = setInterval(pollTelemetry, 2000);
+  $("prompt").focus();
+})();
+</script>
+</body>
+</html>

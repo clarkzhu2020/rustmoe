@@ -1,0 +1,11 @@
+[package]
+name = "rustmoe-attention"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "DeepSeek MLA state layout and KV budget model"
+
+[dependencies]
+rustmoe-model = { path = "../model", version = "0.1.0" }
+serde.workspace = true

@@ -1,0 +1,13 @@
+[package]
+name = "rustmoe-model"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "DeepSeek-V4.1 model descriptor and tensor catalog validation"
+
+[dependencies]
+rustmoe-gguf = { path = "../gguf", version = "0.1.0" }
+rustmoe-quant = { path = "../quant", version = "0.1.0" }
+serde.workspace = true
+thiserror.workspace = true

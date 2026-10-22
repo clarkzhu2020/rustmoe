@@ -1,0 +1,11 @@
+[package]
+name = "rustmoe-expert-cache"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Cost-aware two-tier expert caches"
+
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true
