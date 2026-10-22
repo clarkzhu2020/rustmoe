@@ -32,6 +32,47 @@ Direct CLI form:
       --addr 127.0.0.1:8080 --context 131072 --threads 24 ^
       --agent-root F:\projects --agent-allow-shell
 
+## Projects
+
+Every new run creates its own project directory under the agent root:
+
+    chess-20261022-160000/
+    todo-20261022-161500/
+
+The name is derived from task keywords plus a local timestamp. Existing projects
+are listed in /agent with file count, size and modified time.
+
+- **Use** selects a project for the next task (continue development).
+- **Export** downloads a zip of the project (max 512 MB).
+- **Delete** removes the project directory after confirmation.
+- **New** clears the selection so the next run creates a fresh directory.
+
+Only directories containing `.rustmoe-project.json` are shown as managed
+projects; arbitrary folders under the root are not listed.
+
+## Interrupted tasks
+
+Each project stores `.rustmoe-agent-state.json`:
+
+    {"status":"running|interrupted|finished|failed","task":"...","step":3,"max_steps":24,"transcript":"..."}
+
+If the server restarts while a task is running, or the run is cancelled/limit-hit,
+the project is shown as interrupted. `/agent` displays:
+
+    Interrupted task found
+    <task> · <project> · step 3/24
+    [Continue] [Dismiss]
+
+Continue:
+
+- fills in the persisted task and max steps
+- sends resume=true
+- starts at step 3 and keeps the saved transcript
+- writes the next files in the same project directory
+
+Dismiss only hides the banner for this page load; the project remains in the
+list with `interrupted at 3/24` and can be selected later.
+
 ## Security model
 
 - Every path is resolved inside the configured agent root.
@@ -80,6 +121,15 @@ Tools:
 | finish | end the run with a summary |
 
 ## API
+
+    GET    /v1/agent/projects
+    DELETE /v1/agent/projects/{name}
+    GET    /v1/agent/projects/{name}/export
+
+`/v1/agent/run` with an empty `workspace` creates a new project. Pass an existing
+project name to continue it.
+
+## Run API
 
     POST /v1/agent/run
     Authorization: Bearer ...

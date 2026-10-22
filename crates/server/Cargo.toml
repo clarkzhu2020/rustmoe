@@ -29,6 +29,8 @@ rustmoe-telemetry = { path = "../telemetry", version = "0.1.0" }
 rustmoe-tokenizer = { path = "../tokenizer", version = "0.1.0" }
 anyhow.workspace = true
 async-stream.workspace = true
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
 axum.workspace = true
 bytes.workspace = true
 clap.workspace = true

@@ -952,6 +952,9 @@ async fn serve(
     }
     std::fs::create_dir_all(&agent.root)
         .with_context(|| format!("create agent root {}", agent.root.display()))?;
+    if let Err(error) = crate::agent::mark_interrupted_projects(&agent.root) {
+        tracing::warn!("could not mark interrupted agent projects: {error}");
+    }
     api::serve(Arc::new(runtime), addr, agent).await
 }
 

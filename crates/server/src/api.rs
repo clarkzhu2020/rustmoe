@@ -1,15 +1,17 @@
 //! OpenAI-compatible HTTP surface with SSE streaming and runtime metrics.
 
-use crate::agent::{run_agent, AgentConfig, AgentEvent};
+use crate::agent::{
+    delete_project, export_project, list_projects_with_active, run_agent, AgentConfig, AgentEvent,
+};
 use crate::runtime::{Runtime, RuntimeInfo};
 use axum::{
-    extract::{DefaultBodyLimit, Extension, State},
+    extract::{DefaultBodyLimit, Extension, Path as AxumPath, State},
     http::{header, HeaderMap, StatusCode, Uri},
     response::{
         sse::{Event, KeepAlive, Sse},
         Html, IntoResponse, Response,
     },
-    routing::{get, post},
+    routing::{delete, get, post},
     Json, Router,
 };
 use rustmoe_inference::{FinishReason, GenerationConfig, GenerationEvent, GenerationResult, InferenceError};
@@ -48,6 +50,9 @@ pub fn build_router_with_agent(runtime: AppState, agent: AgentConfig) -> Router 
         .route("/v1/telemetry", get(telemetry))
         .route("/v1/agent/run", post(agent_run))
         .route("/v1/agent/cancel", post(agent_cancel))
+        .route("/v1/agent/projects", get(agent_projects))
+        .route("/v1/agent/projects/{name}", delete(agent_delete_project))
+        .route("/v1/agent/projects/{name}/export", get(agent_export_project))
         .route("/v1/tokenize", post(tokenize))
         .route("/v1/cache/reset", post(cache_reset))
         .route("/v1/chat/completions", post(chat_completions))
@@ -75,7 +80,7 @@ async fn root(State(rt): State<AppState>) -> Json<Value> {
         "backend": rt.info.backend,
         "simulation": rt.info.simulation,
         "chat_format": rt.info.chat_format,
-        "endpoints": ["/chat", "/agent", "/status", "/health", "/v1/models", "/v1/chat/completions", "/v1/completions", "/chat/completions", "/completions", "/v1/system", "/v1/telemetry", "/v1/agent/run", "/v1/agent/cancel", "/v1/runtime", "/metrics"]
+        "endpoints": ["/chat", "/agent", "/status", "/health", "/v1/models", "/v1/chat/completions", "/v1/completions", "/chat/completions", "/completions", "/v1/system", "/v1/telemetry", "/v1/agent/run", "/v1/agent/cancel", "/v1/agent/projects", "/v1/runtime", "/metrics"]
     }))
 }
 
@@ -93,7 +98,7 @@ async fn not_found(uri: Uri) -> (StatusCode, Json<Value>) {
                 "code": "not_found"
             },
             "path": uri.path(),
-            "endpoints": ["/chat", "/agent", "/status", "/health", "/v1/models", "/v1/chat/completions", "/v1/completions", "/chat/completions", "/completions", "/v1/system", "/v1/telemetry", "/v1/agent/run", "/v1/agent/cancel", "/v1/runtime", "/metrics"]
+            "endpoints": ["/chat", "/agent", "/status", "/health", "/v1/models", "/v1/chat/completions", "/v1/completions", "/chat/completions", "/completions", "/v1/system", "/v1/telemetry", "/v1/agent/run", "/v1/agent/cancel", "/v1/agent/projects", "/v1/runtime", "/metrics"]
         })),
     )
 }
@@ -117,6 +122,8 @@ struct AgentRunRequest {
     workspace: Option<String>,
     #[serde(default)]
     max_steps: Option<usize>,
+    #[serde(default)]
+    resume: bool,
 }
 
 async fn agent_run(
@@ -127,18 +134,22 @@ async fn agent_run(
 ) -> Result<Sse<impl futures_util::Stream<Item = Result<Event, Infallible>>>, ApiError> {
     authorize(&headers, &rt)?;
     let task = request.task.trim().to_string();
-    if task.is_empty() {
+    let resume = request.resume;
+    if task.is_empty() && !resume {
         return Err(ApiError::bad_request("invalid_task", "task must not be empty"));
     }
-    let workspace = request.workspace.unwrap_or_else(|| ".".into());
+    let workspace = request.workspace.unwrap_or_default();
     let max_steps = request.max_steps.unwrap_or(agent.max_steps).clamp(1, 64);
     let (tx, mut rx) = mpsc::unbounded_channel::<AgentEvent>();
     let runtime = rt.clone();
     let config = (*agent).clone();
     let cancel = rt.agent_cancel.clone();
     cancel.store(false, std::sync::atomic::Ordering::Relaxed);
+    rt.agent_running.store(true, std::sync::atomic::Ordering::Relaxed);
+    let running = rt.agent_running.clone();
     tokio::task::spawn_blocking(move || {
-        run_agent(runtime, config, workspace, task, max_steps, cancel, tx);
+        let _guard = RunningGuard(running);
+        run_agent(runtime, config, workspace, task, max_steps, resume, cancel, tx);
     });
     let stream = async_stream::stream! {
         while let Some(event) = rx.recv().await {
@@ -149,10 +160,73 @@ async fn agent_run(
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
+struct RunningGuard(Arc<std::sync::atomic::AtomicBool>);
+
+impl Drop for RunningGuard {
+    fn drop(&mut self) {
+        self.0.store(false, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 async fn agent_cancel(State(rt): State<AppState>, headers: HeaderMap) -> Result<Json<Value>, ApiError> {
     authorize(&headers, &rt)?;
     rt.agent_cancel.store(true, std::sync::atomic::Ordering::Relaxed);
     Ok(Json(json!({"cancelled": true})))
+}
+
+async fn agent_projects(
+    State(rt): State<AppState>,
+    Extension(agent): Extension<Arc<AgentConfig>>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, ApiError> {
+    authorize(&headers, &rt)?;
+    let root = agent.root.clone();
+    let active = rt.agent_running.load(std::sync::atomic::Ordering::Relaxed);
+    let projects = tokio::task::spawn_blocking(move || list_projects_with_active(&root, active))
+        .await
+        .map_err(|e| ApiError::internal("agent_projects_task", e.to_string()))?
+        .map_err(|e| ApiError::bad_request("agent_project", e))?;
+    Ok(Json(json!({ "projects": projects })))
+}
+
+async fn agent_delete_project(
+    State(rt): State<AppState>,
+    Extension(agent): Extension<Arc<AgentConfig>>,
+    headers: HeaderMap,
+    AxumPath(name): AxumPath<String>,
+) -> Result<Json<Value>, ApiError> {
+    authorize(&headers, &rt)?;
+    let root = agent.root.clone();
+    tokio::task::spawn_blocking(move || delete_project(&root, &name))
+        .await
+        .map_err(|e| ApiError::internal("agent_delete_task", e.to_string()))?
+        .map_err(|e| ApiError::bad_request("agent_project", e))?;
+    Ok(Json(json!({ "deleted": true })))
+}
+
+async fn agent_export_project(
+    State(rt): State<AppState>,
+    Extension(agent): Extension<Arc<AgentConfig>>,
+    headers: HeaderMap,
+    AxumPath(name): AxumPath<String>,
+) -> Result<Response, ApiError> {
+    authorize(&headers, &rt)?;
+    let root = agent.root.clone();
+    let file_name = name.clone();
+    let bytes = tokio::task::spawn_blocking(move || export_project(&root, &name))
+        .await
+        .map_err(|e| ApiError::internal("agent_export_task", e.to_string()))?
+        .map_err(|e| ApiError::bad_request("agent_project", e))?;
+    let mut response_headers = HeaderMap::new();
+    response_headers.insert(
+        header::CONTENT_TYPE,
+        header::HeaderValue::from_static("application/zip"),
+    );
+    let disposition = format!("attachment; filename=\"{file_name}.zip\"");
+    if let Ok(value) = header::HeaderValue::from_str(&disposition) {
+        response_headers.insert(header::CONTENT_DISPOSITION, value);
+    }
+    Ok((response_headers, bytes).into_response())
 }
 
 async fn v1_root(State(rt): State<AppState>) -> Json<Value> {

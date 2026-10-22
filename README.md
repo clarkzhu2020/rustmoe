@@ -194,9 +194,12 @@ The server also exposes a guarded Dev Agent at `http://127.0.0.1:8080/agent`.
 It can list/read/write files, create directories, glob, grep, and (with explicit
 opt-in) run shell commands inside a configured workspace. The model follows
 plan -> architecture -> code -> UI -> docs -> deploy -> verify and writes the
-complete project into that workspace. Use a dedicated directory and review all
-generated code before production; see [docs/agent.md](docs/agent.md) for the
-security model, limits, and API.
+complete project into that workspace. Each new run gets its own project folder
+(named from task keywords plus a timestamp); the UI lists projects and supports
+continue, export as zip, and delete. Interrupted runs are detected from the
+project state file and offered a Continue action that resumes at the saved step.
+Use a dedicated directory and review all generated code before production; see
+[docs/agent.md](docs/agent.md) for the security model, limits, and API.
 
     set RUSTMOE_AGENT_ROOT=F:\projects
     set RUSTMOE_AGENT_ALLOW_SHELL=1

@@ -24,6 +24,18 @@ events: start, step, tool, finish, error. Requires auth when enabled. The agent
 only accesses paths under the server's --agent-root; shell is disabled unless
 --agent-allow-shell is set. See docs/agent.md.
 
+## Local agent project endpoints
+
+    GET    /v1/agent/projects
+    DELETE /v1/agent/projects/{name}
+    GET    /v1/agent/projects/{name}/export
+
+Projects are directories under --agent-root that contain
+.rustmoe-project.json. Export returns application/zip. New runs with an empty
+workspace create a name from task keywords plus a timestamp. A run can pass
+resume=true (workspace is required) to continue from .rustmoe-agent-state.json;
+the event stream and project list expose status and step.
+
 ## GET /agent
 
 Dev Agent browser UI. It starts /v1/agent/run, streams execution events, and

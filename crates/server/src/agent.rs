@@ -4,7 +4,7 @@ use crate::runtime::Runtime;
 use anyhow::{anyhow, Context, Result};
 use rustmoe_inference::{GenerationConfig, GenerationEvent};
 use rustmoe_tokenizer::{format_chat_deepseek_v41, ChatMessage, ChatRole};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
@@ -37,9 +37,11 @@ impl Default for AgentConfig {
 pub enum AgentEvent {
     Start {
         task: String,
+        project: String,
         root: String,
         workspace: String,
         max_steps: usize,
+        resumed: bool,
     },
     Thinking {
         step: usize,
@@ -73,13 +75,16 @@ pub fn run_agent(
     workspace: String,
     task: String,
     max_steps: usize,
+    resume: bool,
     cancel: Arc<AtomicBool>,
     tx: UnboundedSender<AgentEvent>,
 ) {
     let emit = |event: AgentEvent| {
         let _ = tx.send(event);
     };
-    match execute(runtime, &config, workspace, task, max_steps, &cancel, &emit) {
+    match execute(
+        runtime, &config, workspace, task, max_steps, resume, &cancel, &emit,
+    ) {
         Ok(()) => {}
         Err(error) => emit(AgentEvent::Error {
             message: error.to_string(),
@@ -93,6 +98,7 @@ fn execute(
     workspace: String,
     task: String,
     max_steps: usize,
+    resume: bool,
     cancel: &AtomicBool,
     emit: &dyn Fn(AgentEvent),
 ) -> Result<()> {
@@ -100,33 +106,82 @@ fn execute(
         .root
         .canonicalize()
         .with_context(|| format!("agent root {} does not exist", config.root.display()))?;
-    let workspace = if workspace.trim().is_empty() || workspace.trim() == "." {
-        root.clone()
+    let (workspace, project) = if workspace.trim().is_empty() {
+        let (name, path) = create_project(&root, &task).map_err(|e| anyhow!(e))?;
+        (path, name)
     } else {
-        safe_path(&root, workspace.trim()).map_err(|e| anyhow!(e))?
+        let path = safe_path(&root, workspace.trim()).map_err(|e| anyhow!(e))?;
+        let name = path
+            .strip_prefix(&root)
+            .ok()
+            .map(|p| p.to_string_lossy().to_string())
+            .filter(|p| !p.is_empty())
+            .unwrap_or_else(|| "root".into());
+        (path, name)
     };
     std::fs::create_dir_all(&workspace)
         .with_context(|| format!("create workspace {}", workspace.display()))?;
-    let max_steps = max_steps.clamp(1, 64);
+    let mut state = if resume {
+        read_state(&workspace).ok_or_else(|| {
+            anyhow!("no resumable state was found in this project; use a normal continue instead")
+        })?
+    } else {
+        RunState::default()
+    };
+    let task = if task.trim().is_empty() {
+        state.task.clone()
+    } else {
+        task
+    };
+    let start_step = if resume { state.step } else { 0 };
+    let requested_max = max_steps.max(state.max_steps);
+    let max_steps = if resume && start_step >= requested_max {
+        (start_step + 24).min(64)
+    } else {
+        requested_max.max(start_step + 1).clamp(1, 64)
+    };
+    state.status = "running".into();
+    state.task = task.clone();
+    state.max_steps = max_steps;
+    state.updated_unix = now_unix();
+    if !resume {
+        state.transcript.clear();
+        state.summary.clear();
+        state.step = 0;
+    }
+    write_state(&workspace, &state);
     emit(AgentEvent::Start {
         task: task.clone(),
+        project,
         root: root.display().to_string(),
         workspace: workspace.display().to_string(),
         max_steps,
+        resumed: resume,
     });
-    let mut history = String::new();
+    let mut history = state.transcript.clone();
     let mut written = Vec::<String>::new();
     let system = agent_system_prompt(&root, config.allow_shell);
-    for step in 1..=max_steps {
+    for step in (start_step + 1)..=max_steps {
         if cancel.load(Ordering::Relaxed) {
+            state.status = "interrupted".into();
+            state.step = step.saturating_sub(1);
+            state.transcript = history.clone();
+            state.summary = "Cancelled by user; resume is available.".into();
+            state.updated_unix = now_unix();
+            write_state(&workspace, &state);
             emit(AgentEvent::Error {
                 message: "cancelled by user".into(),
             });
             return Ok(());
         }
         let tree = list_tree(&workspace, 2);
+        let resume_note = if start_step > 0 {
+            format!("\nRESUME FROM STEP {start_step}: previous work is in this project. Inspect the tree before editing and continue from the interruption; do not restart the project.\n")
+        } else {
+            String::new()
+        };
         let user = format!(
-            "TASK: {task}\n\nWORKSPACE TREE:\n{tree}\n\nTRANSCRIPT:\n{history}\n\nReturn exactly one JSON action. Start with {{ and end with }}. No markdown fence."
+            "TASK: {task}\n{resume_note}\nWORKSPACE TREE:\n{tree}\n\nTRANSCRIPT:\n{history}\n\nReturn exactly one JSON action. Start with {{ and end with }}. No markdown fence."
         );
         let prompt = format_chat_deepseek_v41(
             &[
@@ -153,7 +208,7 @@ fn execute(
         };
         let engine = runtime.engine.clone();
         let mut streamed = String::new();
-        let generated = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let generated = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let mut guard = engine.blocking_lock();
             guard.generate_with(&prompt, &cfg, |event| {
                 match &event {
@@ -163,9 +218,27 @@ fn execute(
                 }
                 !(streamed.contains('}') && parse_action(&streamed).is_ok())
             })
-        }))
-        .map_err(|_| anyhow!("agent generation panicked"))?
-        .map_err(|e| anyhow!("agent generation failed: {e}"))?;
+        })) {
+            Ok(Ok(result)) => result,
+            Ok(Err(error)) => {
+                state.status = "interrupted".into();
+                state.step = step.saturating_sub(1);
+                state.transcript = history.clone();
+                state.summary = format!("Generation failed: {error}");
+                state.updated_unix = now_unix();
+                write_state(&workspace, &state);
+                return Err(anyhow!("agent generation failed: {error}"));
+            }
+            Err(_) => {
+                state.status = "interrupted".into();
+                state.step = step.saturating_sub(1);
+                state.transcript = history.clone();
+                state.summary = "Generation panicked; resume from this step.".into();
+                state.updated_unix = now_unix();
+                write_state(&workspace, &state);
+                return Err(anyhow!("agent generation panicked"));
+            }
+        };
         let raw = if streamed.trim().is_empty() {
             generated.text.trim().to_string()
         } else {
@@ -183,6 +256,11 @@ fn execute(
                     ok: false,
                     output: format!("{error}\nRAW: {}", raw.chars().take(400).collect::<String>()),
                 });
+                state.status = "running".into();
+                state.step = step.saturating_sub(1);
+                state.transcript = history.chars().take(24_000).collect();
+                state.updated_unix = now_unix();
+                write_state(&workspace, &state);
                 continue;
             }
         };
@@ -195,6 +273,12 @@ fn execute(
         if action.tool == "finish" {
             let summary = arg_str(&action.args, "summary").unwrap_or_else(|| action.thought.clone());
             let files = list_files(&workspace);
+            state.status = "finished".into();
+            state.step = step;
+            state.transcript = history.chars().take(24_000).collect();
+            state.summary = summary.clone();
+            state.updated_unix = now_unix();
+            write_state(&workspace, &state);
             emit(AgentEvent::Finish {
                 summary,
                 steps: step,
@@ -203,6 +287,12 @@ fn execute(
             return Ok(());
         }
         if cancel.load(Ordering::Relaxed) {
+            state.status = "interrupted".into();
+            state.step = step.saturating_sub(1);
+            state.transcript = history.clone();
+            state.summary = "Cancelled by user; resume is available.".into();
+            state.updated_unix = now_unix();
+            write_state(&workspace, &state);
             emit(AgentEvent::Error {
                 message: "cancelled by user".into(),
             });
@@ -233,6 +323,11 @@ fn execute(
             action.tool,
             output.chars().take(3000).collect::<String>()
         ));
+        state.status = "running".into();
+        state.step = step;
+        state.transcript = history.chars().take(24_000).collect();
+        state.updated_unix = now_unix();
+        write_state(&workspace, &state);
         if history.len() > 24_000 {
             let keep = history.len() - 24_000;
             let mut cut = keep;
@@ -242,6 +337,12 @@ fn execute(
             history.drain(..cut);
         }
     }
+    state.status = "interrupted".into();
+    state.step = max_steps;
+    state.transcript = history.chars().take(24_000).collect();
+    state.summary = format!("Stopped after {max_steps} steps without an explicit finish action.");
+    state.updated_unix = now_unix();
+    write_state(&workspace, &state);
     emit(AgentEvent::Finish {
         summary: format!("Stopped after {max_steps} steps without an explicit finish action."),
         steps: max_steps,
@@ -513,7 +614,15 @@ fn list_tree(root: &Path, depth: usize) -> String {
         if let Ok(entries) = std::fs::read_dir(dir) {
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().to_string();
-                if matches!(name.as_str(), ".git" | "node_modules" | "target" | ".models") {
+                if matches!(
+                    name.as_str(),
+                    ".git"
+                        | "node_modules"
+                        | "target"
+                        | ".models"
+                        | ".rustmoe-project.json"
+                        | ".rustmoe-agent-state.json"
+                ) {
                     continue;
                 }
                 let path = entry.path();
@@ -543,7 +652,15 @@ fn list_files(root: &Path) -> Vec<String> {
             for entry in entries.flatten() {
                 let name_os = entry.file_name();
                 let name = name_os.to_string_lossy();
-                if matches!(name.as_ref(), ".git" | "node_modules" | "target" | ".models") {
+                if matches!(
+                    name.as_ref(),
+                    ".git"
+                        | "node_modules"
+                        | "target"
+                        | ".models"
+                        | ".rustmoe-project.json"
+                        | ".rustmoe-agent-state.json"
+                ) {
                     continue;
                 }
                 let path = entry.path();
@@ -573,7 +690,15 @@ fn grep_path(path: &Path, query: &str) -> Result<String, String> {
                 for entry in entries.flatten() {
                     let name_os = entry.file_name();
                     let name = name_os.to_string_lossy();
-                    if matches!(name.as_ref(), ".git" | "node_modules" | "target" | ".models") {
+                    if matches!(
+                        name.as_ref(),
+                        ".git"
+                            | "node_modules"
+                            | "target"
+                            | ".models"
+                            | ".rustmoe-project.json"
+                            | ".rustmoe-agent-state.json"
+                    ) {
                         continue;
                     }
                     let p = entry.path();
@@ -690,5 +815,419 @@ mod tests {
         };
         let text = execute_tool(&root, &root, false, &read).unwrap();
         assert_eq!(text, "fn main() {}");
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ProjectInfo {
+    pub name: String,
+    pub title: String,
+    pub task: String,
+    pub created_unix: u64,
+    pub updated_unix: u64,
+    pub files: usize,
+    pub bytes: u64,
+    pub status: String,
+    pub step: usize,
+    pub max_steps: usize,
+    pub summary: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct RunState {
+    #[serde(default = "default_status")]
+    status: String,
+    #[serde(default)]
+    task: String,
+    #[serde(default)]
+    step: usize,
+    #[serde(default)]
+    max_steps: usize,
+    #[serde(default)]
+    updated_unix: u64,
+    #[serde(default)]
+    transcript: String,
+    #[serde(default)]
+    summary: String,
+}
+
+fn default_status() -> String {
+    "new".into()
+}
+
+impl Default for RunState {
+    fn default() -> Self {
+        Self {
+            status: "new".into(),
+            task: String::new(),
+            step: 0,
+            max_steps: 24,
+            updated_unix: now_unix(),
+            transcript: String::new(),
+            summary: String::new(),
+        }
+    }
+}
+
+fn state_path(workspace: &Path) -> PathBuf {
+    workspace.join(".rustmoe-agent-state.json")
+}
+
+fn read_state(workspace: &Path) -> Option<RunState> {
+    std::fs::read_to_string(state_path(workspace))
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+}
+
+fn write_state(workspace: &Path, state: &RunState) {
+    if let Ok(body) = serde_json::to_string_pretty(state) {
+        let _ = std::fs::write(state_path(workspace), body);
+    }
+}
+
+pub fn mark_interrupted_projects(root: &Path) -> Result<usize, String> {
+    let root = root
+        .canonicalize()
+        .map_err(|e| format!("canonicalize root {}: {e}", root.display()))?;
+    let mut changed = 0;
+    for entry in std::fs::read_dir(&root).map_err(|e| e.to_string())?.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Some(mut state) = read_state(&path) else {
+            continue;
+        };
+        if state.status == "running" {
+            state.status = "interrupted".into();
+            state.updated_unix = now_unix();
+            state.summary = "Server restarted while this task was running.".into();
+            write_state(&path, &state);
+            changed += 1;
+        }
+    }
+    Ok(changed)
+}
+
+pub fn create_project(root: &Path, task: &str) -> Result<(String, PathBuf), String> {
+    let root = root
+        .canonicalize()
+        .map_err(|e| format!("canonicalize root {}: {e}", root.display()))?;
+    let base = project_slug(task);
+    let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
+    for attempt in 1..1000 {
+        let name = if attempt == 1 {
+            format!("{base}-{stamp}")
+        } else {
+            format!("{base}-{stamp}-{attempt}")
+        };
+        let path = root.join(&name);
+        if path.exists() {
+            continue;
+        }
+        std::fs::create_dir_all(&path).map_err(|e| format!("create project {}: {e}", path.display()))?;
+        let now = now_unix();
+        let meta = serde_json::json!({
+            "name": name,
+            "title": task.chars().take(80).collect::<String>(),
+            "task": task,
+            "created_unix": now,
+        });
+        let _ = std::fs::write(path.join(".rustmoe-project.json"), meta.to_string());
+        return Ok((name, path));
+    }
+    Err("could not allocate a unique project directory".into())
+}
+
+pub fn list_projects(root: &Path) -> Result<Vec<ProjectInfo>, String> {
+    list_projects_with_active(root, false)
+}
+
+pub fn list_projects_with_active(root: &Path, active: bool) -> Result<Vec<ProjectInfo>, String> {
+    let root = root
+        .canonicalize()
+        .map_err(|e| format!("canonicalize root {}: {e}", root.display()))?;
+    let mut out = Vec::new();
+    let entries = std::fs::read_dir(&root).map_err(|e| format!("list {}: {e}", root.display()))?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with('.') || name == "target" || name == "node_modules" {
+            continue;
+        }
+        let mut files = 0usize;
+        let mut bytes = 0u64;
+        let mut updated = std::fs::metadata(&path)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        count_files(&path, &mut files, &mut bytes, &mut updated);
+        let Some(meta) = std::fs::read_to_string(path.join(".rustmoe-project.json"))
+            .ok()
+            .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+        else {
+            continue;
+        };
+        let title = meta
+            .get("title")
+            .and_then(Value::as_str)
+            .unwrap_or(&name)
+            .to_string();
+        let task = meta.get("task").and_then(Value::as_str).unwrap_or("").to_string();
+        let created = meta
+            .get("created_unix")
+            .and_then(Value::as_u64)
+            .unwrap_or(updated);
+        let run = read_state(&path).unwrap_or_default();
+        let status = if run.status == "running" && !active {
+            "interrupted".to_string()
+        } else {
+            run.status.clone()
+        };
+        out.push(ProjectInfo {
+            name,
+            title,
+            task,
+            created_unix: created,
+            updated_unix: updated.max(run.updated_unix),
+            files,
+            bytes,
+            status,
+            step: run.step,
+            max_steps: run.max_steps,
+            summary: run.summary,
+        });
+    }
+    out.sort_by(|a, b| b.updated_unix.cmp(&a.updated_unix));
+    Ok(out)
+}
+
+pub fn delete_project(root: &Path, name: &str) -> Result<(), String> {
+    let root = root
+        .canonicalize()
+        .map_err(|e| format!("canonicalize root {}: {e}", root.display()))?;
+    let path = safe_path(&root, name)?;
+    if path == root {
+        return Err("refusing to delete the agent root".into());
+    }
+    if !path.is_dir() {
+        return Err("project is not a directory".into());
+    }
+    std::fs::remove_dir_all(&path).map_err(|e| format!("delete {}: {e}", path.display()))
+}
+
+pub fn export_project(root: &Path, name: &str) -> Result<Vec<u8>, String> {
+    let root = root
+        .canonicalize()
+        .map_err(|e| format!("canonicalize root {}: {e}", root.display()))?;
+    let dir = safe_path(&root, name)?;
+    if !dir.is_dir() {
+        return Err("project is not a directory".into());
+    }
+    let mut files = Vec::new();
+    collect_export_files(&dir, &dir, &mut files, 0)?;
+    let mut total = 0u64;
+    for (_, path) in &files {
+        total += std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    }
+    if total > 512 * 1024 * 1024 {
+        return Err("project is larger than 512 MB".into());
+    }
+    let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let options =
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+    for (rel, path) in files {
+        let data = std::fs::read(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
+        zip.start_file(rel, options)
+            .map_err(|e| format!("zip entry: {e}"))?;
+        std::io::Write::write_all(&mut zip, &data).map_err(|e| format!("zip write: {e}"))?;
+    }
+    let cursor = zip.finish().map_err(|e| format!("finish zip: {e}"))?;
+    Ok(cursor.into_inner())
+}
+
+fn collect_export_files(
+    root: &Path,
+    dir: &Path,
+    out: &mut Vec<(String, PathBuf)>,
+    depth: usize,
+) -> Result<(), String> {
+    if depth > 32 || out.len() > 20000 {
+        return Ok(());
+    }
+    for entry in std::fs::read_dir(dir)
+        .map_err(|e| format!("list {}: {e}", dir.display()))?
+        .flatten()
+    {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if matches!(
+            name.as_str(),
+            ".git"
+                | "node_modules"
+                | "target"
+                | ".models"
+                | ".rustmoe-project.json"
+                | ".rustmoe-agent-state.json"
+        ) {
+            continue;
+        }
+        let path = entry.path();
+        if path.is_dir() {
+            collect_export_files(root, &path, out, depth + 1)?;
+        } else if let Ok(rel) = path.strip_prefix(root) {
+            out.push((rel.to_string_lossy().replace('\\', "/"), path));
+        }
+    }
+    Ok(())
+}
+
+fn count_files(dir: &Path, files: &mut usize, bytes: &mut u64, updated: &mut u64) {
+    if *files > 100000 {
+        return;
+    }
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if let Ok(meta) = entry.metadata() {
+                if let Ok(modified) = meta.modified() {
+                    if let Ok(duration) = modified.duration_since(std::time::UNIX_EPOCH) {
+                        *updated = (*updated).max(duration.as_secs());
+                    }
+                }
+                if meta.is_dir() {
+                    count_files(&path, files, bytes, updated);
+                } else {
+                    *files += 1;
+                    *bytes += meta.len();
+                }
+            }
+        }
+    }
+}
+
+fn now_unix() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+fn project_slug(task: &str) -> String {
+    let lower = task.to_lowercase();
+    let known: &[(&str, &str)] = &[
+        ("象棋", "chess"),
+        ("chess", "chess"),
+        ("游戏", "game"),
+        ("game", "game"),
+        ("待办", "todo"),
+        ("todo", "todo"),
+        ("任务管理", "task-manager"),
+        ("博客", "blog"),
+        ("blog", "blog"),
+        ("商城", "shop"),
+        ("shop", "shop"),
+        ("聊天", "chat"),
+        ("chat", "chat"),
+        ("爬虫", "crawler"),
+        ("crawler", "crawler"),
+        ("计算器", "calculator"),
+        ("calculator", "calculator"),
+        ("管理", "manager"),
+        ("management", "manager"),
+        ("登录", "auth"),
+        ("auth", "auth"),
+        ("文档", "docs"),
+        ("docs", "docs"),
+        ("api", "api"),
+        ("dashboard", "dashboard"),
+        ("website", "website"),
+        ("网站", "website"),
+        ("portfolio", "portfolio"),
+    ];
+    for (needle, slug) in known {
+        if lower.contains(needle) {
+            return (*slug).to_string();
+        }
+    }
+    let mut ascii = String::new();
+    for word in lower
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|w| w.len() >= 2)
+    {
+        if !ascii.is_empty() {
+            ascii.push('-');
+        }
+        ascii.push_str(word);
+        if ascii.len() >= 32 {
+            break;
+        }
+    }
+    let ascii = ascii.trim_matches('-').to_string();
+    if ascii.is_empty() {
+        "project".into()
+    } else {
+        ascii
+    }
+}
+
+#[cfg(test)]
+mod project_tests {
+    use super::*;
+
+    #[test]
+    fn slug_uses_task_language() {
+        assert_eq!(project_slug("开发一个中国象棋游戏"), "chess");
+        assert_eq!(project_slug("build a todo app"), "todo");
+        assert_eq!(project_slug("random words here"), "random-words-here");
+    }
+
+    #[test]
+    fn project_lifecycle() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let (name, path) = create_project(&root, "build a todo app").unwrap();
+        assert!(name.starts_with("todo-"));
+        std::fs::write(path.join("README.md"), "# Todo\n").unwrap();
+        let list = list_projects(&root).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].name, name);
+        assert!(list[0].files >= 1);
+        let zip = export_project(&root, &name).unwrap();
+        assert!(zip.len() > 20);
+        delete_project(&root, &name).unwrap();
+        assert!(list_projects(&root).unwrap().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod resume_tests {
+    use super::*;
+
+    #[test]
+    fn marks_running_project_interrupted() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let (_name, path) = create_project(&root, "build a todo app").unwrap();
+        let state = RunState {
+            status: "running".into(),
+            task: "build a todo app".into(),
+            step: 3,
+            max_steps: 24,
+            updated_unix: now_unix(),
+            transcript: "STEP 3".into(),
+            summary: String::new(),
+        };
+        write_state(&path, &state);
+        mark_interrupted_projects(&root).unwrap();
+        let state = read_state(&path).unwrap();
+        assert_eq!(state.status, "interrupted");
+        assert_eq!(state.step, 3);
+        let projects = list_projects(&root).unwrap();
+        assert_eq!(projects[0].status, "interrupted");
     }
 }
