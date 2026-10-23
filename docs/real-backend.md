@@ -13,22 +13,22 @@ implementation. Do not describe it as one.
 | Item | Value |
 |---|---|
 | Model | DeepSeek-V4.1-Flash-1017 UD-IQ1_S |
-| Model size | 5 shards, 233.0 GB decimal |
-| GPU | RTX 3060 12 GB, compute capability 8.6 |
-| Host RAM | 68 GB installed (minimum target 32 GB) |
-| Host process peak commit | about 11.8 GB |
-| Model disk | F: ST8000VN004 HDD, 2.8 TB free; 12-19 min cold load |
+| Model size | 5 shards, 216.97 GiB tensor bytes |
+| Current GPU | RTX 4090 24 GB, compute capability 8.9 |
+| Historical GPU | RTX 3060 12 GB, compute capability 8.6 |
+| Host RAM | 64 GB (32 GB minimum target) |
+| Model disk | C: WD Blue SN570 NVMe; 1-5 min cold load observed |
 | Reference | unslothai/llama.cpp, dsv41-all, commit d1781c3 |
 | CUDA | 13.4 build against CUDA 12 runtime DLLs |
-| Context | 2048 tokens for measured runs |
+| Context | 131072 current; 2048 for the first 12 GB runs |
 
-The 4090 in the test system was occupied by another workload, so all real tests
-were pinned to the 12 GB RTX 3060.
+The 12 GB results below are historical. The current 24 GB profile runs 3 GPU
+expert layers, 37 host layers, 24 threads, 0 MiB MoE cache, and 4-5 tok/s.
 
-The host had 68 GB installed, which satisfies the 32 GB minimum but is not an
-exact 32 GB test. Peak process commit was about 11.8 GB and the 256-token run's
-working set was about 19.3 GB. Both are below 32 GB. The rest of the host is
-available for the OS page cache and I/O. Do not enable mlock on 32 GB.
+The original 12 GB validation host had 68 GB installed; the current host has 64
+GB. Both satisfy the 32 GB minimum. Peak process commit in the 12 GB run was
+about 11.8 GB and the 256-token working set about 19.3 GB. Do not enable mlock
+on a 32 GB host.
 
 ## Windows 4090 24 GB / 64 GB launcher
 
@@ -50,11 +50,14 @@ During model load a terminal spinner shows elapsed seconds. After the HTTP
 listener binds, the server prints a ready banner with URL, model, backend,
 context, GPU placement, and cache size.
 
---check validates files and GPU detection without loading weights. The default context is 131072 (128K); startdeepseek.bat 65536 requests 64K
-explicitly. Both 64K and 128K were executed on the RTX 4090. The launcher
-uses 16 CPU expert threads by default; set RUSTMOE_THREADS to override and
-RUSTMOE_ADDR to change the listen address. testdeepseek.bat verifies /health,
-/v1/models, and a real /v1/chat/completions request.
+--check validates files and GPU detection without loading weights. The default
+context is 131072 (128K); startdeepseek.bat 65536 requests 64K explicitly. Both
+64K and 128K were executed on the RTX 4090. The launcher now uses 24 CPU expert
+threads and 0 MiB MoE cache by default; set RUSTMOE_THREADS and
+RUSTMOE_MOE_CACHE to override. RUSTMOE_ADDR changes the listen address.
+testdeepseek.bat verifies /health, /v1/models, and a real chat request.
+
+For the fast/deep switch and the 8081 fast agent, see docs/dual-engine.md.
 
 For OpenAI clients the base URL is http://127.0.0.1:8080/v1, not the full
 /chat/completions endpoint. /v1/responses is not implemented. The current build
@@ -109,14 +112,13 @@ runtime context, so code agents that require context_length > 64K see 65536 or
 |---|---|---|---|---|
 | C: | WD Blue SN570 1TB | SSD | NVMe | system; only NVMe volume |
 | D: | WDC WDS100T2G0A | SSD | SATA | software |
-| E:, F: | ST8000VN004 | HDD | SATA | project/model store |
+| E:, F: | ST8000VN004 | HDD | SATA | historical model store |
 | G:, H: | Samsung 870 EVO 2TB | SSD | SATA | project/backup; not NVMe |
 | X: | Seagate BUP Slim | HDD | USB | backup |
 
-The IQ1_S model was on F:, an HDD. Its 217 GiB cold load took about 12 minutes;
-a 200 MB/s full-read estimate is 18.5 minutes. move-model-to-ssd.bat defaults to
-C: because it is the only NVMe volume. G:/H: are still much faster than the HDD
-but are SATA SSDs.
+The model was originally on F:, an HDD, where a cold load took about 12 minutes.
+It now lives on C:, the only NVMe volume; cold load is 1-5 minutes. G:/H: are
+SATA SSDs, much faster than the HDD but slower than C:.
 
 ## Flags
 
@@ -134,12 +136,13 @@ but are SATA SSDs.
 - --llama-batch 512 sets the logical batch.
 - --load-mode 1 selects mmap.
 - --lazy-mode on allows on-demand rows for the 202 GB Engram/PLE table.
-- --threads 16 controls CPU expert computation.
+- --threads 24 controls CPU expert computation; the current 4090 profile uses 24.
 
-The 1 GiB MoE cache is deliberately small. Dense weights consumed about
-6.3 GB, CUDA compute buffers about 1.3 GB, and the rest is KV/context/runtime.
-A 2 GiB cache also fit, at roughly 9.8 GB total. Do not raise the cache without
-measuring the actual free VRAM.
+The 1 GiB cache figures below are historical 12 GB measurements. Dense weights
+consumed about 6.3 GB, CUDA compute buffers about 1.3 GB, and the rest was
+KV/context/runtime. The current 128K profile uses 0 MiB cache because the small
+cache had no hits and slowed decode. Do not raise the cache without measuring
+backend hit rate and free VRAM.
 
 Cold startup is slow. Mapping metadata and dense weights over a 233 GB cold
 store can take minutes; warm OS page cache makes later starts much faster. On

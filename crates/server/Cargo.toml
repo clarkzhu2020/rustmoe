@@ -10,6 +10,10 @@ description = "RustMoE CLI and OpenAI-compatible HTTP server"
 name = "rustmoe"
 path = "src/main.rs"
 
+[[bin]]
+name = "rustmoe-agent"
+path = "src/bin/rustmoe-agent.rs"
+
 [features]
 default = []
 llama = ["dep:rustmoe-backend-llama", "rustmoe-backend-llama/llama"]
@@ -36,6 +40,7 @@ bytes.workspace = true
 clap.workspace = true
 futures-util.workspace = true
 glob = "0.3"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 serde.workspace = true
 serde_json.workspace = true
 sysinfo.workspace = true

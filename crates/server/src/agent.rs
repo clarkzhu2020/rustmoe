@@ -214,6 +214,70 @@ fn skill_file(skills: &[Skill], name: &str, file: &str) -> Result<String, String
     String::from_utf8(bytes).map_err(|_| "skill file is not UTF-8".into())
 }
 
+pub enum AgentModel {
+    Local(Arc<Runtime>),
+    Http(HttpAgent),
+}
+
+pub struct HttpAgent {
+    base_url: String,
+    model: String,
+    api_key: Option<String>,
+    client: reqwest::blocking::Client,
+}
+
+impl HttpAgent {
+    pub fn new(base_url: String, model: String, api_key: Option<String>) -> Self {
+        let client = reqwest::blocking::Client::builder()
+            .timeout(None)
+            .build()
+            .unwrap_or_else(|_| reqwest::blocking::Client::new());
+        Self {
+            base_url: base_url.trim_end_matches('/').to_string(),
+            model,
+            api_key,
+            client,
+        }
+    }
+
+    fn chat(&self, system: &str, user: &str) -> Result<String, String> {
+        let mut request = self
+            .client
+            .post(format!("{}/v1/chat/completions", self.base_url))
+            .json(&serde_json::json!({
+                "model": self.model,
+                "messages": [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user}
+                ],
+                "max_tokens": 3072,
+                "temperature": 0.0,
+                "stream": false
+            }));
+        if let Some(key) = &self.api_key {
+            request = request.bearer_auth(key);
+        }
+        let response = request
+            .send()
+            .map_err(|e| format!("upstream request failed: {e}"))?;
+        let status = response.status();
+        let body: Value = response
+            .json()
+            .map_err(|e| format!("upstream returned invalid JSON ({status}): {e}"))?;
+        if !status.is_success() {
+            return Err(format!("upstream HTTP {status}: {body}"));
+        }
+        body.get("choices")
+            .and_then(Value::as_array)
+            .and_then(|c| c.first())
+            .and_then(|c| c.get("message"))
+            .and_then(|m| m.get("content"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .ok_or_else(|| format!("upstream response has no message content: {body}"))
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AgentEvent {
@@ -252,7 +316,7 @@ pub enum AgentEvent {
 }
 
 pub fn run_agent(
-    runtime: Arc<Runtime>,
+    model: AgentModel,
     config: AgentConfig,
     workspace: String,
     task: String,
@@ -264,9 +328,7 @@ pub fn run_agent(
     let emit = |event: AgentEvent| {
         let _ = tx.send(event);
     };
-    match execute(
-        runtime, &config, workspace, task, max_steps, resume, &cancel, &emit,
-    ) {
+    match execute(model, &config, workspace, task, max_steps, resume, &cancel, &emit) {
         Ok(()) => {}
         Err(error) => emit(AgentEvent::Error {
             message: error.to_string(),
@@ -275,7 +337,7 @@ pub fn run_agent(
 }
 
 fn execute(
-    runtime: Arc<Runtime>,
+    model: AgentModel,
     config: &AgentConfig,
     workspace: String,
     task: String,
@@ -316,7 +378,11 @@ fn execute(
         task
     };
     let start_step = if resume { state.step } else { 0 };
-    let requested_max = max_steps.max(state.max_steps);
+    let requested_max = if resume {
+        max_steps.max(state.max_steps)
+    } else {
+        max_steps
+    };
     let max_steps = if resume && start_step >= requested_max {
         (start_step + 24).min(64)
     } else {
@@ -370,66 +436,17 @@ fn execute(
         let user = format!(
             "TASK: {task}\n{resume_note}\nWORKSPACE TREE:\n{tree}\n\nTRANSCRIPT:\n{history}\n\nReturn exactly one JSON action. Start with {{ and end with }}. No markdown fence."
         );
-        let prompt = format_chat_deepseek_v41(
-            &[
-                ChatMessage {
-                    role: ChatRole::System,
-                    content: system.clone(),
-                },
-                ChatMessage {
-                    role: ChatRole::User,
-                    content: user,
-                },
-            ],
-            true,
-        );
-        emit(AgentEvent::Thinking {
-            step,
-            message: format!("model call {step}/{max_steps}: planning next action"),
-        });
-        let cfg = GenerationConfig {
-            max_tokens: 3072,
-            temperature: 0.0,
-            top_p: 0.95,
-            ..GenerationConfig::default()
-        };
-        let engine = runtime.engine.clone();
-        let mut streamed = String::new();
-        let generated = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let mut guard = engine.blocking_lock();
-            guard.generate_with(&prompt, &cfg, |event| {
-                match &event {
-                    GenerationEvent::Token(t) => streamed.push_str(&t.text),
-                    GenerationEvent::Text { text } => streamed.push_str(text),
-                    GenerationEvent::Finished { .. } => {}
-                }
-                !(streamed.contains('}') && parse_action(&streamed).is_ok())
-            })
-        })) {
-            Ok(Ok(result)) => result,
-            Ok(Err(error)) => {
+        let raw = match generate_step(&model, &system, &user) {
+            Ok(raw) => raw,
+            Err(error) => {
                 state.status = "interrupted".into();
                 state.step = step.saturating_sub(1);
                 state.transcript = history.clone();
                 state.summary = format!("Generation failed: {error}");
                 state.updated_unix = now_unix();
                 write_state(&workspace, &state);
-                return Err(anyhow!("agent generation failed: {error}"));
+                return Err(error);
             }
-            Err(_) => {
-                state.status = "interrupted".into();
-                state.step = step.saturating_sub(1);
-                state.transcript = history.clone();
-                state.summary = "Generation panicked; resume from this step.".into();
-                state.updated_unix = now_unix();
-                write_state(&workspace, &state);
-                return Err(anyhow!("agent generation panicked"));
-            }
-        };
-        let raw = if streamed.trim().is_empty() {
-            generated.text.trim().to_string()
-        } else {
-            streamed.trim().to_string()
         };
         let action = match parse_action(&raw) {
             Ok(action) => action,
@@ -1466,5 +1483,55 @@ mod skill_tests {
         assert!(skill_body(&skills, "web-research")
             .unwrap()
             .contains("search.mjs"));
+    }
+}
+
+fn generate_step(model: &AgentModel, system: &str, user: &str) -> Result<String> {
+    match model {
+        AgentModel::Http(agent) => agent
+            .chat(system, user)
+            .map(|text| text.trim().to_string())
+            .map_err(|e| anyhow!("agent upstream failed: {e}")),
+        AgentModel::Local(runtime) => {
+            let prompt = format_chat_deepseek_v41(
+                &[
+                    ChatMessage {
+                        role: ChatRole::System,
+                        content: system.to_string(),
+                    },
+                    ChatMessage {
+                        role: ChatRole::User,
+                        content: user.to_string(),
+                    },
+                ],
+                true,
+            );
+            let cfg = GenerationConfig {
+                max_tokens: 3072,
+                temperature: 0.0,
+                top_p: 0.95,
+                ..GenerationConfig::default()
+            };
+            let engine = runtime.engine.clone();
+            let mut streamed = String::new();
+            let generated = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let mut guard = engine.blocking_lock();
+                guard.generate_with(&prompt, &cfg, |event| {
+                    match &event {
+                        GenerationEvent::Token(t) => streamed.push_str(&t.text),
+                        GenerationEvent::Text { text } => streamed.push_str(text),
+                        GenerationEvent::Finished { .. } => {}
+                    }
+                    !(streamed.contains('}') && parse_action(&streamed).is_ok())
+                })
+            }))
+            .map_err(|_| anyhow!("agent generation panicked"))?
+            .map_err(|e| anyhow!("agent generation failed: {e}"))?;
+            if streamed.trim().is_empty() {
+                Ok(generated.text.trim().to_string())
+            } else {
+                Ok(streamed.trim().to_string())
+            }
+        }
     }
 }

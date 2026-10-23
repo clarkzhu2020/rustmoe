@@ -1,492 +1,469 @@
 # RustMoE
 
-RustMoE is a Rust control plane for running very large GGUF MoE models on
+RustMoE is a Rust control plane for very large GGUF MoE models on
 workstation-class hardware. It treats weight placement across VRAM, host RAM,
 and NVMe as a first-class runtime concern instead of assuming the model fits in
 VRAM.
 
-This repository now executes real DeepSeek-V4.1-Flash-1017 tokens through a
-reference llama.cpp backend, while RustMoE owns the GGUF inspection, memory
-planning, CLI, HTTP/SSE API, tokenizer boundary, metrics, and lifecycle. A
-deterministic simulation backend remains for tests and for running without
-CUDA or model weights.
+It has two model engines plus a separate fast agent:
 
-The validated low-memory path is:
+| Mode | Model | Speed on this host | Entry point |
+|---|---|---|---|
+| **Deep** | DeepSeek-V4.1-Flash-1017, 748B, IQ1_S | ~4-5 tok/s | http://127.0.0.1:8080 |
+| **Fast** | Strata + Qwen3.8-Flash-Next, 125B, IQ3_S | ~90-140 tok/s | http://127.0.0.1:8080 |
+| **Fast Agent** | Strata model + RustMoE local tools | follows Strata | http://127.0.0.1:8081/agent |
 
-- NVIDIA RTX 3060 12 GB VRAM
-- 68 GB host RAM (the design minimum is 32 GB; the process commit peak was
-  about 11.8 GB, and weights are mmap-streamed)
-- 233 GB UD-IQ1_S model on NVMe (the design minimum is 500 GB free)
-- all routed experts on the host with a 1 GiB GPU MoE cache, dense tensors on
-  the GPU, lazy/mmap loading
-- real completion: prompt "The capital of France is" -> " Paris. The capital"
-- second validated class: RTX 4090 24 GB, automatic plan with 3 GPU expert
-  layers; context 8192 in the first test and 64K/128K later validated
+The two model engines cannot occupy the 24 GB RTX 4090 at the same time.
+engine-fast.bat and engine-deep.bat switch between them. The fast agent does
+not load a model and can run beside Strata.
 
-This is genuine model execution, not simulation. It is low-speed compatibility:
-observed throughput was roughly 0.07-0.72 tokens/s on the 12 GB device. The same
-planner scales from 16 to 32 GB VRAM and 32 to 256 GB RAM without fixed constants.
+[Quick start](#quick-start) · [Dual engine](docs/dual-engine.md) · [Agent](docs/agent.md) · [Skills](docs/skills.md) · [API](docs/api.md) · [Performance](docs/performance.md) · [Troubleshooting](docs/troubleshooting.md)
 
-## What this version actually does
+![RustMoE status dashboard](docs/status-dashboard.png)
+
+## Quick start
+
+Check what is running:
+
+    engine-status.bat
+
+Start the fast stack (Strata + Qwen + RustMoE fast agent):
+
+    engine-fast.bat
+
+Open:
+
+    http://127.0.0.1:8080          Strata chat / OpenAI API
+    http://127.0.0.1:8081/agent    RustMoE fast Dev Agent
+
+Start the deep stack (RustMoE + DeepSeek):
+
+    engine-deep.bat
+
+Open:
+
+    http://127.0.0.1:8080/status   live system and API dashboard
+    http://127.0.0.1:8080/chat     chat with sessions
+    http://127.0.0.1:8080/agent    Deep Dev Agent
+    http://127.0.0.1:8080/v1       OpenAI-compatible API
+
+Deep model loading can take 1-5 minutes on NVMe. The switch scripts wait for
+/health before returning.
+
+## Why two engines?
+
+Strata's 100+ tok/s and RustMoE's 4-5 tok/s are not the same workload:
+
+| | Strata / Qwen | RustMoE / DeepSeek |
+|---|---|---|
+| Parameters | ~125B | 748B |
+| Weight size | 35-55 GB | 217 GiB |
+| GPU expert placement | hot expert cache, 80-90% hit | 3 of 40 layers |
+| Speculative decoding | MTP, 4 drafts | not implemented |
+| Prompt reuse | 140K-token prefix reuse | not implemented |
+| KV | int8 | F16 |
+| Decode | 90-140 tok/s | 4-5 tok/s |
+
+See [docs/dual-engine.md](docs/dual-engine.md) and
+[docs/performance.md](docs/performance.md) for the measured logs and analysis.
+
+## What this version does
 
 - Parses GGUF v2/v3 headers without touching tensor payloads.
-- Discovers and validates split shards, tensor offsets, alignment, shapes, and
-  quantization layouts.
-- Knows the real DeepSeek-V4.1 metadata keys and tensor catalog:
-  deepseek41, 40 layers, 5120 hidden, MLA, 384 routed experts with top-6 plus a
-  shared expert, DSpark metadata, and the Engram/PLE table.
-- Builds a VRAM/RAM/disk budget and computes expert cache capacity before load.
-- Implements cost-aware two-tier expert cache bookkeeping and a top-K preserving
-  scheduler with read coalescing and prefetch accounting.
-- Implements a GPT-2 byte-level BPE tokenizer from GGUF metadata. The real
-  DeepSeek vocabulary works, including the 129,280-token tokenizer.
-- Exposes a CLI and an OpenAI-compatible HTTP API with SSE streaming,
-  Prometheus metrics, request cancellation, and runtime diagnostics.
-- Serves a deterministic simulation backend for end-to-end runtime tests.
-- Executes real tokens through llama.cpp reference kernels using a narrow C ABI;
-  the DeepSeek-V4.1 branch owns MLA, Engram, routing, and MoE dispatch.
-- Exposes llama.cpp MoE cache telemetry (hits, misses, uploaded bytes) in the
-  generation result and /v1/runtime.
-- Chooses context and GPU/host expert placement from free VRAM and RAM by
-  default; CUDA_VISIBLE_DEVICES is respected. Manual flags remain available.
-- Includes a standalone MXFP4 GEMV CUDA kernel source. It is not linked yet.
+- Discovers split shards, validates offsets, alignment, shapes, and quantization.
+- Knows DeepSeek-V4.1: 40 layers, 5120 hidden, MLA, 384 routed experts, top-6
+  plus a shared expert, DSpark metadata, and the Engram/PLE table.
+- Plans VRAM, RAM, NVMe, KV, and expert cache capacity before loading weights.
+- Executes real DeepSeek tokens through the Unsloth llama.cpp dsv41-all branch
+  behind a narrow C ABI. RustMoE owns lifecycle, tokenizer, API, and metrics.
+- Auto-selects context, GPU expert layers, host layers, and MoE cache from free
+  VRAM/RAM and CUDA_VISIBLE_DEVICES.
+- Serves OpenAI-compatible chat/completions with SSE streaming, cancellation,
+  Prometheus metrics, API key auth, and a live dashboard.
+- Provides a browser chat with streaming, auto max-token sizing, auto-continue,
+  and persistent sessions stored in localStorage.
+- Provides a local Dev Agent with file, shell, skill, project, export, delete,
+  and interrupted-task resume tools.
+- Loads 17 SKILL.md packs: web research, ComfyUI workflows, computer control,
+  website maintenance, project delivery, and DeepSeek Harness packs.
+- Runs the Dev Agent against either the local DeepSeek engine or an
+  OpenAI-compatible Strata upstream. The fast agent is a separate binary and
+  uses no VRAM.
+
 
 ## What this version does not do
 
-- It is not a native Rust/CUDA DeepSeek implementation. Real execution is the
-  llama.cpp reference backend behind a C ABI.
-- It does not load the full model into RAM. mmap/lazy loading and CPU expert
-  overrides keep the resident set bounded.
-- It does not implement the full official Jinja chat template. It has a basic
-  DeepSeek-V4.1 chat encoder for text, without tools, images, or thinking mode.
-- It does not support images, DSpark speculative decoding, multi-GPU
-  execution, or concurrent sessions. The engine is serialized by a mutex.
-- It does not yet expose per-layer llama.cpp router selections. The cumulative
-  llama.cpp MoE cache stats (hits, misses, uploaded bytes) are exposed through
-  backend_cache, but RustMoE scheduler counters remain inactive in real mode.
+- It is not a native Rust/CUDA DeepSeek forward pass. Real execution is
+  llama.cpp behind a C ABI.
+- It does not implement DeepSeek DSpark speculative decoding, per-expert
+  hotness placement, or prompt prefix KV reuse.
+- It does not implement a full official Jinja chat template, tools, images,
+  reasoning_content, JSON mode, n>1, or /v1/responses.
+- It does not run DeepSeek and Strata simultaneously. One GPU, one loaded model.
+- It does not guarantee production-quality generated code. Review agent output.
 
-Simulation output is labelled as simulation. Real output is labelled with
-backend=llama.cpp and simulation=false.
+## Current hardware and measured placement
 
-## Verified model facts
+Host:
 
-The design brief asked for six facts to be checked before coding. The public
-snapshot was inspected directly. Details and checksums are in
-docs/model-snapshot.md.
+    GPU:  NVIDIA GeForce RTX 4090 24 GB (index 0)
+          NVIDIA GeForce RTX 3060 12 GB (index 1)
+    CPU:  Intel i9-14900KF
+    RAM:  64 GB
+    Disk: C: WD Blue SN570 NVMe (model), D: SATA SSD, G:/H: SATA SSD
 
-| Fact | Observed |
-|---|---|
-| Architecture key | deepseek41, not deepseek_v41 |
-| Layers | 40 |
-| Hidden size | 5120 |
-| Attention | MLA, q_lora 1280, latent/key 512, rope 64, 64 heads, 8 output groups |
-| Routed experts | 384 per layer, top-6, one shared expert, sqrtsoftplus |
-| Context | 1,048,576 tokens, sliding window 128 |
-| Engram/PLE | layers 1 and 14, 768,022,850 rows, head dim 256 |
-| DSpark | separate optional drafter, block 5, target layers 37..39 |
-| Quant directory | UD-Q4_K_XL, 9 shards, 500.7 GB |
+Deep 128K baseline:
 
-The name Q4_K_XL does not mean every tensor is Q4_K. In this directory:
+    Model:             DeepSeek-V4.1-Flash-1017 UD-IQ1_S
+    Shards:            5
+    Tensor bytes:      216.97 GiB
+    Context:           131072
+    Threads:           24
+    MoE cache:         0 MiB
+    GPU expert layers: 3
+    Host expert layers:37
+    VRAM:              about 20.9-21.1 GB
+    Decode:            about 4-5 tok/s
+    TTFT:              about 4-6 s for a short request
 
-| Role | GGML type | Bytes |
-|---|---|---|
-| Routed experts | MXFP4 | 288.78 GB |
-| Engram/PLE table | MXFP8 extension type 43 | 202.76 GB |
-| Dense Q8 tensors | Q8_0 | 8.69 GB |
-| Norms, routers, small tensors | F32 | 0.47 GB |
-| Total tensor bytes | mixed | 500.70 GB |
+At 64K, four GPU expert layers were tested and measured 3.22 tok/s, slower than
+the 128K three-layer baseline. Do not assume more layers are always faster.
 
-There are 1043 tensors. The three expert tensors occupy 18,800,640 bytes per
-expert. A cold top-6 selection across all 40 layers moves about 4.51 GB per
-token. That number, not the GPU FLOP count, is the central systems problem.
+A short 8-token request measured:
 
-## Real DeepSeek execution on 12-24 GB
+    prefill 3.98 s
+    decode  1.55 s
+    5.16 tok/s
 
-The reference branch is Unsloth llama.cpp PR 298, branch dsv41-all, commit
-d1781c3. It contains the DeepSeek-V4.1 model, MXFP8 Engram table, sparse
-attention, quantized K cache, and Engram host placement.
+Longer prompts and generated code are slower; 4-5 tok/s is the practical range.
 
-Build it once on Windows with CUDA:
+The 12 GB RTX 3060 path remains a low-speed compatibility target at roughly
+0.07-0.72 tok/s. It is useful for correctness, not interactive chat.
 
-    git clone --depth 1 --branch dsv41-all https://github.com/unslothai/llama.cpp.git .models/llama.cpp
-    cmake -S .models/llama.cpp -B .models/llama-build -G "Visual Studio 18 2026" -A x64 ^
-      -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES="86;89" -DLLAMA_CURL=OFF -DLLAMA_BUILD_TESTS=OFF
-    cmake --build .models/llama-build --config Release --target llama llama-cli llama-server -- /m:16
+## Fast mode and the fast agent
 
-Then build RustMoE with the reference feature:
+Fast mode is Strata, already installed at C:\Strata:
 
-    cargo build --release -p rustmoe-server --features llama
+    engine-fast.bat
 
-The helper scripts scripts/build-reference.ps1 and scripts/download-iq1-s.ps1
-perform the same setup on Windows. The build script applies
-patches/llama-moe-cache-stats.patch, which adds the MoE cache telemetry API.
-Apply the same patch if you build llama.cpp manually.
+It starts:
 
-Download the 5 IQ1_S shards (about 233 GB, fits a 500 GB disk) from:
+    8080  Strata + Qwen3.8-Flash-Next IQ3_S, 262144 context, int8 KV, MTP
+    8081  RustMoE fast agent, no GPU model
 
-    https://huggingface.co/unsloth/DeepSeek-V4.1-Flash-1017-GGUF/tree/main/UD-IQ1_S
+The fast agent is a standalone Rust binary:
 
-Run a real completion. Automatic placement is the default:
+    rustmoe-agent.exe --addr 127.0.0.1:8081 ^
+      --upstream http://127.0.0.1:8080 ^
+      --model qwen3.8-flash-next-iq3_s ^
+      --agent-root workspace --skills-dir skills --agent-allow-shell
 
-    set CUDA_VISIBLE_DEVICES=1
-    target\release\rustmoe.exe simulate ^
-      .models\UD-IQ1_S\DeepSeek-V4.1-Flash-1017-UD-IQ1_S-00001-of-00005.gguf ^
-      --backend llama --prompt "The capital of France is" --max-tokens 4
+It keeps the local tool loop:
 
-Automatic placement is the default. It reads free VRAM and available RAM,
-honors CUDA_VISIBLE_DEVICES, and chooses context, GPU/host expert layers, and
-MoE cache size. Use --no-auto-device for the manual override shown below.
+- read/list/write/mkdir/delete/glob/grep
+- PowerShell with explicit allow
+- skill loading and helper scripts
+- project directory management
+- interrupted task detection and resume
+- ZIP export
+- same 17 skills as Deep mode
 
-Measured automatic plans: RTX 3060 12 GB selected 0 GPU expert layers and a
-1143 MiB cache; RTX 4090 24 GB selected 3 GPU expert layers. With 64K context
-it used 0 MiB MoE cache and about 18.1 GB VRAM; with 128K context it used 0 MiB
-cache and about 20.9 GB VRAM. Both 64K and 128K completed real requests.
+The only change is where the model tokens come from: Strata instead of the local
+DeepSeek engine. A verified two-step task created fast.txt and finished in
+seconds.
 
-The manual 12 GB command used for the first measurements was:
+## Dev Agent
 
-    target\release\rustmoe.exe simulate ^
-      .models\UD-IQ1_S\DeepSeek-V4.1-Flash-1017-UD-IQ1_S-00001-of-00005.gguf ^
-      --backend llama --context 2048 --prompt "The capital of France is" ^
-      --max-tokens 4 --gpu-layers 999 --cpu-moe-layers=-1 ^
-      --moe-cache-mib 1024 --llama-batch 512 --threads 16 ^
-      --load-mode 1 --lazy-mode on
+Both agents use the same project model.
 
-Observed output on RTX 3060 12 GB:
+Every new run creates:
 
-    Paris. The capital
+    workspace/<task-slug>-YYYYMMDD-HHMMSS/
 
-An eight-token continuation of "The quick brown fox" produced
-". Jumps. Over the lazy dog" with 53.2 s prefill and 76.2 s decode. A
-256-token length/stability run completed with 355 s decode and a 19.3 GB working
-set; its greedy sample was newline-only, so it is not a quality example. Observed
-timing for the France run was prompt 5 tokens, prefill 60.2 s, 4 decode tokens in
-24.4 s. A chat request produced "Paris." with a 159 s prompt evaluation and
-28.6 s decode. A four-token run decoded in 12.35 s (0.32 tokens/s) after a
-32.4 s prefill. Throughput is 0.07-0.72 tokens/s. This is real inference and
-low-speed compatibility, not interactive chat.
+Inside:
 
-For the HTTP API:
+    .rustmoe-project.json
+    .rustmoe-agent-state.json
+    PLAN.md
+    ARCHITECTURE.md
+    source files, UI, docs, deployment files
 
-    target\release\rustmoe.exe serve ^
-      .models\UD-IQ1_S\DeepSeek-V4.1-Flash-1017-UD-IQ1_S-00001-of-00005.gguf ^
-      --backend llama --addr 127.0.0.1:8080
+Project state is saved after every step. If the server stops, the run is
+cancelled, or max steps are reached, the agent page shows:
 
-The server resolves the device plan at startup and exposes it in /v1/runtime.
-Open `http://127.0.0.1:8080/status` for the live dashboard (CPU/GPU/RAM/VRAM,
-current request, system history, service, context, device plan, MoE cache,
-latency history, recent requests, API access URLs/cURL, warnings, raw JSON). It
-refreshes every second through /v1/telemetry.
+    Interrupted task found
+    <task> - <project> - step 3/24
+    [Continue] [Dismiss]
 
-Open `http://127.0.0.1:8080/chat` for a llama.cpp-style local chat page. It
-streams `/v1/chat/completions`, keeps conversation history in the browser, and
-shows live phase, GPU, CPU, and tok/s in the sidebar. Max new tokens is sized
-from the prompt between 8192 and 262144 (capped by the active context), and
-auto-continue keeps extending the same answer while finish_reason=length. A
-Continue button remains for manual/disabled auto-continue. Sessions are stored in
-browser localStorage: create, rename, switch, and delete separate conversations
-from the sidebar.
-
-![RustMoE chat page](docs/chat.png)
-
-## Local development agent
-
-The server also exposes a guarded Dev Agent at `http://127.0.0.1:8080/agent`.
-It can list/read/write files, create directories, glob, grep, and (with explicit
-opt-in) run shell commands inside a configured workspace. The model follows
-plan -> architecture -> code -> UI -> docs -> deploy -> verify and writes the
-complete project into that workspace. Each new run gets its own project folder
-(named from task keywords plus a timestamp); the UI lists projects and supports
-continue, export as zip, and delete. Interrupted runs are detected from the
-project state file and offered a Continue action that resumes at the saved step.
-Use a dedicated directory and review all generated code before production; see
-[docs/agent.md](docs/agent.md) for the security model, limits, and API.
-
-    set RUSTMOE_AGENT_ROOT=F:\projects
-    set RUSTMOE_AGENT_ALLOW_SHELL=1
-    startdeepseek.bat
-
-![RustMoE Dev Agent](docs/agent.png)
+Continue resumes from the saved step with the transcript and existing files.
+New projects are isolated by directory; old projects can be continued, exported,
+or deleted. See [docs/agent.md](docs/agent.md).
 
 ### Skills
 
-The agent loads 17 SKILL.md packs from `skills/`: web research, ComfyUI video
-workflows, computer control, website maintenance, project delivery, and the
-installed DeepSeek Harness packs (agent experience, Cordis, Office, Windows ACL).
-The model sees the catalog and loads a skill body with the `skill` tool. Web
-search/fetch and ComfyUI are executed through the skills' helper scripts and the
-agent shell. See [docs/skills.md](docs/skills.md).
+The skills directory contains 17 packs:
 
-For a manual placement, add --no-auto-device and the explicit flags.
+    web-research
+    comfyui-video
+    computer-control
+    website-maintenance
+    project-delivery
+    agent-experience
+    cordis-composition-reference
+    cordis-plugin-development
+    editing-cordis-compositions
+    diagnose-windows-sandbox-acl
+    office
+    office-docx
+    office-export-pdf
+    office-pptx
+    office-recalculate
+    office-render
+    office-xlsx
 
-![RustMoE live status dashboard](docs/status-dashboard.png)
+Each pack is a SKILL.md with frontmatter. The agent sees a catalog and loads the
+body with the skill tool. Web search/fetch and ComfyUI are helper scripts run
+through the shell. See [docs/skills.md](docs/skills.md).
 
-### Windows RTX 4090 24 GB + 64 GB launcher
+Skills are instructions, not plugins. Office/Cordis skills can require Python
+packages, LibreOffice Kit, or the DSH Cordis host. ComfyUI requires a running
+server at http://127.0.0.1:8188.
 
-A ready-to-run launcher is included for the 24 GB / 64 GB class:
 
-    startdeepseek.bat --check
-    startdeepseek.bat
-    startdeepseek.bat 65536
-    testdeepseek.bat
-    restartdeepseek.bat
-    move-model-to-ssd.bat
-    disks.bat
+## API
 
-The launcher prints the model drive type and a cold-load estimate. On the
-current F: HDD the 217 GiB model needs roughly 12-19 minutes to load; on the C:
-NVMe it needs roughly 1-3 minutes. On this host C: is the only NVMe volume;
-G:/H: are Samsung 870 EVO SATA SSDs, not NVMe. move-model-to-ssd.bat copies the model to
-C:\rustmoe-models (one time, about 20 minutes) and writes a pointer that the
-launcher picks up automatically.
-
-During the long load, a terminal spinner shows elapsed time. The ready banner is
-printed only after the HTTP listener has bound, with URL, model, backend,
-context, GPU placement, cache, and the chat endpoint.
-
---check validates the executable, model shard, DLLs, and 4090 detection without
-loading weights. The normal launch finds the physical 4090 index, sets
-CUDA_VISIBLE_DEVICES, and lets automatic placement choose context, GPU/host
-expert layers, and MoE cache. The default is 131072 (128K). startdeepseek.bat 65536 requests 64K; both were
-executed on the RTX 4090. /v1/models exposes context_length, context_window,
-and max_model_len as 131072, with max_context_length 1048576. A 700-word prompt
-was also tested; prefill batches are split to the backend n_batch so long code
-agent prompts no longer hit the llama.cpp batch assertion.
-
-At 128K, 24 CPU expert threads measured 4.03 decode tokens/s vs 3.21 with 16
-threads on the i9-14900KF (8-token test). A 279 MiB automatic MoE cache dropped
-the same 24-thread run to 1.86 tok/s because it had no hits; with cache 0 it
-measured 4.13 tok/s. The launcher defaults to 24 threads and cache 0. Set
-RUSTMOE_MOE_CACHE to a larger value only after checking the hit rate. The status
-page shows decode tok/s when available and falls back to overall tokens/s for
-one-token replies.
-
-restartdeepseek.bat stops only a rustmoe process listening on the configured
-port, then starts the new binary. Use it after rebuilding so a stale server does
-not keep serving old routes.
-
-If a client reports 404, the API is usually healthy but configured with a wrong
-base URL or model name. Two base URLs work: `http://127.0.0.1:8080/v1` for
-OpenAI SDKs and `http://127.0.0.1:8080` for DeepSeek-style clients that append
-`/chat/completions` themselves. Do not use the full endpoint as `base_url`, and
-do not duplicate `/v1`. Run `testdeepseek.bat` to verify `/health`, `/v1/models`, and a
-real `/v1/chat/completions` call. `/v1/responses` is not implemented. The
-current build accepts deepseek-chat and related model aliases; restart an older
-server to pick that up.
-
-Use /v1/completions for raw prompts. /v1/chat/completions is OpenAI Chat
-Completions compatible for text and streaming; an OpenAI SDK or a DeepSeek client
-that uses the same shape can point at base_url http://127.0.0.1:8080/v1 with
-api_key local and model deepseek-v4.1-flash-1017 (deepseek-chat is an alias).
-Tool calls, reasoning_content/thinking, images, JSON mode, n>1, and
-/v1/responses are not implemented. See docs/api.md for the exact compatibility
-matrix, docs/real-backend.md for the backend, and docs/performance.md for the
-thread/cache measurements and the Strata comparison.
-
-The build script stages llama.dll, ggml DLLs, and CUDA 12 runtime DLLs beside
-the Rust executable. If the reference directories move, set LLAMA_CPP_DIR and
-LLAMA_BUILD_DIR.
-
-## Quick start with the tiny fixture
-
-The fixture is synthetic and small. It exercises parsing, validation, planning,
-scheduler bookkeeping, tokenizer, CLI, HTTP, SSE, and metrics. It is not a
-language model.
-
-    cargo build --release
-    cargo run -q -p rustmoe-server -- inspect fixtures/tiny-ds41/tiny-ds41-00001-of-00001.gguf
-    cargo run -q -p rustmoe-server -- validate fixtures/tiny-ds41/tiny-ds41-00001-of-00001.gguf
-    cargo run -q -p rustmoe-server -- plan fixtures/tiny-ds41/tiny-ds41-00001-of-00001.gguf --context 128 --vram 12GiB --ram 32GiB --gpu-cache 4GiB --host-cache 8GiB
-    cargo run -q -p rustmoe-server -- simulate fixtures/tiny-ds41/tiny-ds41-00001-of-00001.gguf --context 64 --max-tokens 8
-
-The released binary is target/release/rustmoe.exe on Windows and
-target/release/rustmoe elsewhere.
-
-## Inspecting a real model header
-
-Shard 1 of the real Q4_K_XL directory is only 5.78 MB because it contains
-metadata and the tokenizer. It can be inspected alone:
-
-    rustmoe inspect /models/DeepSeek-V4.1-Flash-1017-UD-Q4_K_XL-00001-of-00009.gguf --single-file
-    rustmoe tokenize /models/DeepSeek-V4.1-Flash-1017-UD-Q4_K_XL-00001-of-00009.gguf --single-file --text "Hello, world!"
-
-The real tokenizer produced:
-
-    ids:     [19923, 14, 2058, 3]
-    tokens:  ["Hello", ",", "Ġworld", "!"]
-    decoded: "Hello, world!"
-
-The joyai-llm pre-tokenizer is not byte-for-byte verified, so the tokenizer
-reports exact=false. The BPE merge loop and byte alphabet are exact.
-
-## Validating a complete split
-
-Pass shard 1. RustMoE discovers the other expected shards from the filename and
-fails if one is missing:
-
-    rustmoe validate /models/DeepSeek-V4.1-Flash-1017-UD-Q4_K_XL-00001-of-00009.gguf
-
-Validation checks split continuity, header bounds, tensor alignment, tensor
-shapes, expert layout consistency, quantization support, and tokenizer
-metadata. Unknown quantization layouts are errors, not guesses.
-
-## Planning memory
-
-Planning requires the complete tensor catalog:
-
-    rustmoe plan /models/DeepSeek-V4.1-Flash-1017-UD-Q4_K_XL-00001-of-00009.gguf \
-      --context 8192 --vram 24GiB --ram 64GiB --cache-dtype f16 \
-      --gpu-cache 10GiB --host-cache 40GiB
-
-The plan prints:
-
-- usable VRAM after display, runtime, safety, KV, and workspace reserves;
-- whether the dense spine is resident in VRAM or offloaded to RAM;
-- GPU and host expert cache capacity in experts and percent of all experts;
-- KV bytes per component and per token;
-- cold NVMe and PCIe I/O time per token, with an explicit warning that this is
-  not a throughput prediction;
-- an automatically reduced prefill chunk; input is never silently truncated.
-
-12 GB VRAM with 32 GB RAM is a compatibility target, not an interactive target.
-The planner is allowed to say INSUFFICIENT.
-
-## Serving the simulation API
-
-    rustmoe serve fixtures/tiny-ds41/tiny-ds41-00001-of-00001.gguf \
-      --addr 127.0.0.1:8080 --context 64 --prefill-chunk 16 \
-      --gpu-cache 128KiB --host-cache 256KiB
-
-Endpoints:
+Deep and fast agent expose related APIs.
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | /health | liveness and simulation flag |
-| GET | /v1/models | OpenAI model list |
-| GET | /v1/runtime | model facts, plan, scheduler and cache state |
-| GET | /metrics | Prometheus text |
+| GET | /health | liveness, model, engine |
+| GET | /status | dashboard (Deep only) |
+| GET | /chat | chat UI (Deep only) |
+| GET | /agent | Dev Agent UI |
+| GET | /v1/models | model list and context fields |
+| GET | /v1/runtime | plan, caches, metrics (Deep) |
+| GET | /v1/system | hardware snapshot (Deep) |
+| GET | /v1/telemetry | CPU/GPU/RAM/activity feed (Deep) |
+| POST | /v1/chat/completions | chat or SSE stream |
+| POST | /v1/completions | text completion or SSE |
 | POST | /v1/tokenize | GGUF BPE tokenization |
-| POST | /v1/cache/reset | reset cache and scheduler counters |
-| POST | /v1/chat/completions | chat completion or SSE stream |
-| POST | /v1/completions | text completion or SSE stream |
+| POST | /v1/cache/reset | reset cache counters |
+| POST | /v1/agent/run | agent SSE run |
+| POST | /v1/agent/cancel | request cancellation |
+| GET | /v1/agent/projects | list projects |
+| DELETE | /v1/agent/projects/{name} | delete project |
+| GET | /v1/agent/projects/{name}/export | ZIP download |
+| GET | /v1/agent/skills | list skills |
+| GET | /v1/agent/skills/{name} | skill body |
 
-Chat request:
+Base URLs:
 
-    {
-      "model": "RustMoE Tiny DS41 Fixture",
-      "messages": [{"role": "user", "content": "Hi"}],
-      "max_tokens": 8,
-      "temperature": 0.0,
-      "seed": 7
-    }
+    http://127.0.0.1:8080/v1    OpenAI SDK base_url
+    http://127.0.0.1:8080       DeepSeek clients that append /chat/completions
 
-Every response includes rustmoe.simulation=true and the HTTP header
-x-rustmoe-simulation: true. Streaming sends OpenAI-shaped chunks and ends with
-data: [DONE]. Client disconnect cancels the blocking generation task.
+Do not use the full endpoint as base_url and do not duplicate /v1.
 
-Optional bearer auth: pass --api-key secret. Health, models, and metrics remain
-public.
+Example:
+
+    curl http://127.0.0.1:8080/v1/chat/completions ^
+      -H "Content-Type: application/json" ^
+      -d "{\"model\":\"deepseek-v4.1-flash-1017\",\"messages\":[{\"role\":\"user\",\"content\":\"Hello\"}],\"max_tokens\":64}"
+
+With an API key:
+
+    -H "Authorization: Bearer YOUR_KEY"
+
+The status dashboard's API access card shows the live base URL, model, auth
+state, endpoint links, and copyable cURL commands.
+
+## Build from source
+
+Prerequisites: Rust stable, CMake, Visual Studio with CUDA, and the reference
+llama.cpp branch.
+
+    git clone --depth 1 --branch dsv41-all https://github.com/unslothai/llama.cpp.git .models/llama.cpp
+    cmake -S .models/llama.cpp -B .models/llama-build -G "Visual Studio 18 2026" -A x64 ^
+      -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES="86;89" ^
+      -DLLAMA_CURL=OFF -DLLAMA_BUILD_TESTS=OFF
+    cmake --build .models/llama-build --config Release --target llama llama-cli llama-server -- /m:16
+    cargo build --release -p rustmoe-server --features llama
+
+This also builds the fast agent:
+
+    cargo build --release -p rustmoe-server --bin rustmoe-agent
+
+The helper scripts scripts/build-reference.ps1 and scripts/download-iq1-s.ps1
+perform the reference setup. The build applies
+patches/llama-moe-cache-stats.patch for MoE cache telemetry.
+
+Model download:
+
+    https://huggingface.co/unsloth/DeepSeek-V4.1-Flash-1017-GGUF/tree/main/UD-IQ1_S
+
+## Model facts
+
+| Fact | Observed |
+|---|---|
+| Architecture key | deepseek41 |
+| Layers | 40 |
+| Hidden size | 5120 |
+| Attention | MLA, q_lora 1280, latent/key 512, rope 64, 64 heads, 8 groups |
+| Routed experts | 384/layer, top-6, one shared expert, sqrtsoftplus |
+| Context | 1,048,576 native, sliding window 128 |
+| Engram/PLE | layers 1 and 14, 768,022,850 rows, head dim 256 |
+| DSpark | separate optional drafter, block 5, target layers 37..39 |
+| IQ1_S tensor bytes | 216.97 GiB |
+| Tensors | 1,043 |
+
+The Q4_K_XL directory is 500.7 GB and is not the model used for the 24 GB
+profile. Its routed experts are MXFP4 and the Engram table is MXFP8. IQ1_S is
+the low-memory profile.
+
+## Memory planning
+
+    rustmoe plan MODEL.gguf --context 131072 --vram 24GiB --ram 64GiB
+
+The planner reports:
+
+- usable VRAM after display, runtime, safety, KV, and workspace reserves;
+- dense spine placement;
+- GPU/host expert cache capacity;
+- KV bytes per component and per token;
+- cold NVMe/PCIe time per token, explicitly not a throughput promise;
+- a reduced prefill chunk without truncating prompts.
+
+12 GB VRAM with 32 GB RAM is a compatibility target. The planner is allowed to
+return INSUFFICIENT.
+
 
 ## Architecture
 
-    CLI / OpenAI HTTP / SSE
-              |
-        Runtime assembly
-              |
-    +---------+----------+------------------+
-    | GGUF parser        | Memory planner   |
-    | splits, metadata   | VRAM/RAM/NVMe    |
-    | tensor catalog     | KV and reserve   |
-    +---------+----------+------------------+
-              |
-    +---------+----------+------------------+
-    | Expert scheduler   | Tiered caches    |
-    | top-K preserved    | GPU / host / SSD |
-    | coalesce, prefetch | cost-aware LFU   |
-    +---------+----------+------------------+
-              |
-       Inference backend boundary
-              |
-     Simulation now; CUDA/native later
+    CLI / OpenAI HTTP / SSE / Status / Chat / Agent
+                         |
+                  Runtime assembly
+                         |
+        +----------------+----------------+
+        | GGUF parser    | Memory planner  |
+        | splits, shapes | VRAM/RAM/NVMe   |
+        +----------------+----------------+
+                         |
+        +----------------+----------------+
+        | Expert scheduler | GPU/host/SSD  |
+        | top-K preserved  | caches        |
+        +----------------+----------------+
+                         |
+              Inference backend boundary
+                  /                 \
+       llama.cpp C ABI          Strata HTTP
+       local DeepSeek           fast agent only
+                         |
+                    Metrics / telemetry
 
-The scheduler rejects a route with fewer than the configured top-K experts,
-duplicate experts, a missing layer, or a missing shared expert. A small cache
-causes eviction, not semantic reduction.
+The agent server is separate because it must run while Strata owns the GPU:
+
+    rustmoe-agent (8081, no model)
+        |-- local file/shell/skill/project tools
+        |-- HTTP -> Strata 8080 /v1/chat/completions
 
 ## Repository layout
 
-    crates/gguf           streaming GGUF v2/v3 and split discovery
-    crates/quant          tensor layouts and reference dequantizers
-    crates/model          DeepSeek-V4.1 facts, catalog, validation
-    crates/attention      MLA state geometry and KV budget
+    crates/gguf           GGUF v2/v3 and split discovery
+    crates/quant          tensor layouts and dequantizers
+    crates/model          DeepSeek-V4.1 facts and validation
+    crates/attention      MLA geometry and KV budget
     crates/memory         VRAM/RAM/disk planner
     crates/io-engine      positioned reads and mmap expert store
-    crates/expert-cache   cost-aware GPU/host cache bookkeeping
-    crates/scheduler      top-K preserving expert scheduling
-    crates/backend        backend trait and deterministic simulator
-    crates/backend-llama  llama.cpp reference execution through a C shim
-    crates/tokenizer      GGUF GPT-2 byte-level BPE
+    crates/expert-cache   GPU/host cache bookkeeping
+    crates/scheduler      top-K preserving scheduling
+    crates/backend        backend trait and simulator
+    crates/backend-llama  llama.cpp C shim
+    crates/tokenizer      GGUF BPE
     crates/inference      prefill, decode, sampling, UTF-8 streaming
-    crates/telemetry      counters, latency histograms, Prometheus
-    crates/server         CLI and OpenAI-compatible HTTP
-    kernels/cuda          standalone MXFP4 GEMV prototype
-    patches/              local llama.cpp cache-telemetry patch
-    scripts/              reference build, download, and run helpers
-    fixtures/tiny-ds41    generated synthetic fixture
-    docs/                 architecture, formats, planning, snapshot, API
-
-## Correctness and safety rules
-
-- Unsupported quantization layouts fail before load.
-- Split files are discovered from shard 1 and all expected shards must exist.
-- Tensor ranges must be aligned and inside their shard.
-- Router top-K is a hard contract. Cache pressure never drops an expert.
-- Prefill chunk size shrinks; prompt tokens do not.
-- The memory planner reports failure instead of quietly overcommitting.
-- The simulation flag is present in CLI output, API JSON, and response headers.
-- The tokenizer reports whether its pre-tokenizer is verified.
+    crates/telemetry      metrics and Prometheus
+    crates/server         CLI, HTTP, dashboard, chat, agent, fast agent
+    skills/               17 SKILL.md packs and helpers
+    scripts/              build, engine switch, import, diagnostics
+    fixtures/tiny-ds41    synthetic test model
+    docs/                 architecture, API, agent, skills, performance
 
 ## Tests
 
-    cargo test --workspace
-    cargo clippy --workspace --all-targets
     cargo fmt --check
+    cargo clippy --workspace --all-targets
+    cargo test --workspace
 
-The suite covers GGUF parsing and bounds, quantization block sizes and
-dequantization, model facts, validation, memory budgets, cache policies,
-scheduler invariants, tokenizer merges and streaming UTF-8, API shape, SSE
-termination, auth, and metrics.
+The server suite covers GGUF parsing, quantization, planning, scheduler/cache
+invariants, tokenizer/UTF-8, API shape, SSE, auth, telemetry, status/chat/agent
+pages, and agent/skill/project/resume unit tests.
 
-The CUDA prototype is compiled separately and has no numerical parity test yet.
+## Security and safety
+
+- Unsupported quantization fails before load.
+- Split shards and tensor bounds are validated.
+- Router top-K is a hard contract; cache pressure never drops an expert.
+- Prefill chunks shrink; prompts are not silently truncated.
+- The agent is restricted to --agent-root and rejects .., absolute paths, and
+  escaping symlinks.
+- Shell is disabled unless --agent-allow-shell is set.
+- The agent can delete files and run commands. Use a dedicated workspace and
+  review generated code.
+- Fast agent and deep agent both bind to localhost by default. Add --api-key
+  before exposing them.
 
 ## Status and roadmap
 
 | Area | Status |
 |---|---|
 | GGUF v2/v3 and split validation | implemented |
-| DeepSeek-V4.1 metadata and catalog | implemented |
+| DeepSeek-V4.1 metadata/catalog | implemented |
 | Memory planning | implemented |
-| Top-K scheduler and caches | implemented as control plane |
-| Tokenizer | usable, pre-tokenizer exactness reported |
-| OpenAI API and SSE | implemented on simulation and llama.cpp backends |
-| Real DeepSeek execution | implemented through llama.cpp reference backend |
-| 12 GB VRAM real decode | validated on RTX 3060 12 GB, low-speed |
-| 24 GB VRAM real decode | validated on RTX 4090 with auto placement |
-| 16-32 GB VRAM planning | unit-tested auto planner; 24 GB executed |
+| OpenAI API, SSE, auth, metrics | implemented |
+| Real DeepSeek via llama.cpp | implemented |
+| 12 GB real decode | validated, low-speed |
+| 24 GB real decode | validated, 4-5 tok/s at 128K |
+| Status dashboard + API access | implemented |
+| Chat sessions | implemented |
+| Dev Agent, projects, resume | implemented |
+| 17 skills, web/ComfyUI helpers | implemented |
+| Fast agent over Strata | implemented |
+| Dual-engine switch | implemented |
 | Native Rust/CUDA forward | not implemented |
-| CUDA kernels | one prototype, not integrated |
-| Real model benchmarks | measured for IQ1_S on 12 GB, see docs/benchmark.md |
-| llama.cpp MoE cache telemetry | exposed as backend_cache |
-| 256-token stability | completed; output quality not asserted |
+| DSpark speculative decoding | not implemented |
+| Per-expert hot cache | not implemented |
+| Prompt prefix KV reuse | not implemented |
 
-The next step is to instrument llama.cpp's router and MoE cache decisions so
-RustMoE's scheduler and metrics apply to real execution, then replace operator
-families with native kernels behind a logits-parity gate.
+Next engineering priorities:
 
-Real-backend setup and flags are in docs/real-backend.md.
+1. Prefix KV reuse for agent/chat.
+2. DeepSeek DSpark/speculative decoding.
+3. Per-expert profile cache in the llama.cpp path.
+4. Fused low-bit CUDA kernels.
+5. Optional gateway that routes one endpoint to fast or deep based on health.
+
+## Documentation
+
+- [Documentation index](docs/README.md)
+- [docs/dual-engine.md](docs/dual-engine.md) - fast/deep switching
+- [docs/troubleshooting.md](docs/troubleshooting.md) - common failures
+- [docs/agent.md](docs/agent.md) - projects, resume, security
+- [docs/skills.md](docs/skills.md) - 17 skills and adding new ones
+- [docs/api.md](docs/api.md) - HTTP/SSE compatibility
+- [docs/performance.md](docs/performance.md) - measured TPS and Strata comparison
+- [docs/benchmark.md](docs/benchmark.md) - benchmark details
+- [docs/real-backend.md](docs/real-backend.md) - llama.cpp setup and flags
+- [docs/memory-planning.md](docs/memory-planning.md) - budgets and placement
+- [docs/architecture.md](docs/architecture.md) - crate architecture
+- [docs/model-snapshot.md](docs/model-snapshot.md) - verified model facts
+- [docs/supported-formats.md](docs/supported-formats.md) - GGUF/quantization
+- [docs/status-dashboard.png](docs/status-dashboard.png)
+- [docs/chat.png](docs/chat.png)
+- [docs/agent.png](docs/agent.png)
 
 ## License
 
 MIT. See LICENSE.
-created by clarkzhu 
-github: https://github.com/clarkzhu2020
-blog: https://clarkzhu.blog
+
+Created by clarkzhu.
+
+- GitHub: https://github.com/clarkzhu2020
+- Blog: https://clarkzhu.blog

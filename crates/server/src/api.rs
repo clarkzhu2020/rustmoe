@@ -2,7 +2,7 @@
 
 use crate::agent::{
     delete_project, export_project, list_projects_with_active, list_skill_infos, read_skill, run_agent,
-    AgentConfig, AgentEvent,
+    AgentConfig, AgentEvent, AgentModel,
 };
 use crate::runtime::{Runtime, RuntimeInfo};
 use axum::{
@@ -152,7 +152,16 @@ async fn agent_run(
     let running = rt.agent_running.clone();
     tokio::task::spawn_blocking(move || {
         let _guard = RunningGuard(running);
-        run_agent(runtime, config, workspace, task, max_steps, resume, cancel, tx);
+        run_agent(
+            AgentModel::Local(runtime),
+            config,
+            workspace,
+            task,
+            max_steps,
+            resume,
+            cancel,
+            tx,
+        );
     });
     let stream = async_stream::stream! {
         while let Some(event) = rx.recv().await {

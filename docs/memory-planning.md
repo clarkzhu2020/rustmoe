@@ -38,6 +38,21 @@ The planner also compares reported free VRAM with the amount required now. If
 another process is occupying the device, the plan fails instead of assuming it
 will go away.
 
+## Current 24 GB result
+
+The RTX 4090 / 64 GB host with 128K context produces:
+
+    GPU expert layers: 3
+    host expert layers: 37
+    MoE cache: 0 MiB
+    KV: F16 MLA state
+    observed VRAM: about 20.9-21.1 GB
+    predicted headroom: small, positive
+
+The planner deliberately reserves compute and safety headroom. Four layers at
+64K did not improve decode; it measured 3.22 tok/s versus 4.03-5.16 at 128K and
+three layers.
+
 ## KV estimate
 
 The DSV4.1 cache is not a Llama KV cache. The planner estimates:

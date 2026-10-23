@@ -7,12 +7,13 @@ that it can decode on a workstation whose VRAM and RAM are much smaller than the
 model. The runtime must be schedulable, observable, and verifiable. It must not
 silently change model semantics to make the budget close.
 
-## Non-goals for v0.1
+## Non-goals
 
 - Replacing every llama.cpp kernel immediately.
 - Training or quantization.
 - Multi-user batching.
 - Multi-GPU execution.
+- Running DeepSeek and a second GPU model at the same time.
 - Claiming throughput without measurement.
 
 ## Layers
@@ -22,7 +23,9 @@ silently change model semantics to make the budget close.
     Runtime
       GGUF catalog, memory planner, expert scheduler, caches
     Execution
-      Backend trait; simulation today, native/reference backend next
+      Backend trait; llama.cpp real backend; simulation for tests
+    Fast agent
+      local tools plus Strata HTTP model
     Storage
       NVMe split files; optional mmap; explicit positioned reads
     Devices
@@ -48,7 +51,8 @@ a substitute for GPU matrix math.
 | rustmoe-tokenizer | GGUF GPT-2 byte-level BPE and UTF-8 decode |
 | rustmoe-inference | prefill chunking, decode loop, sampling, stream events |
 | rustmoe-telemetry | atomic counters, latency buckets, Prometheus |
-| rustmoe-server | CLI, OpenAI API, SSE, auth, runtime assembly |
+| rustmoe-backend-llama | narrow C++ shim for the DeepSeek llama.cpp branch |
+| rustmoe-server | CLI, OpenAI API, SSE, auth, dashboards, agent, fast agent |
 
 ## Load sequence
 
@@ -152,6 +156,23 @@ is the next control-plane task.
 Route B replaces execution with native Rust control plus CUDA kernels. It must
 proceed one operator family at a time with parity gates. The MXFP4 GEMV prototype
 in kernels/cuda is the first step, not the finish line.
+
+## Agent and dual engine
+
+The deep server embeds the agent in crates/server/src/agent.rs. The agent owns
+project directories, state, skills, path guards, tools, and SSE. Model calls go
+through one of two paths:
+
+    AgentModel::Local(Runtime) -> llama.cpp DeepSeek
+    AgentModel::Http(HttpAgent) -> OpenAI-compatible /v1/chat/completions
+
+The standalone rustmoe-agent binary is an HTTP agent server with no local model.
+It binds 127.0.0.1:8081, forwards model calls to Strata on 8080, and executes all
+tools locally. This is how the fast agent works while Strata owns the GPU.
+
+engine-fast.bat starts Strata and the fast agent. engine-deep.bat stops both and
+starts the deep RustMoE server on 8080. The two model engines are exclusive; the
+fast agent is not, because it has no weights.
 
 ## Observability
 

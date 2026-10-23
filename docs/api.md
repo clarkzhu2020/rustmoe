@@ -1,10 +1,19 @@
 # HTTP API
 
-Base URL example: http://127.0.0.1:8080
+There are two modes across three services:
 
-Two backends are available. The default simulation is for tests. Real inference
-is selected with --backend llama and requires a RustMoE binary built with the
-llama feature plus the reference llama.cpp DLLs. Real responses carry
+| Service | Address | Purpose |
+|---|---|---|
+| RustMoE deep | http://127.0.0.1:8080 | local DeepSeek, status/chat/agent, full API |
+| RustMoE fast agent | http://127.0.0.1:8081 | local tools, Strata model upstream |
+| Strata fast | http://127.0.0.1:8080 | Qwen chat/API in fast mode |
+
+Only one model engine runs at a time on the 24 GB GPU. The fast agent on 8081
+runs beside Strata and exposes the agent subset of the API.
+
+For deep mode, the default simulation is for tests. Real inference is selected
+with --backend llama and requires a RustMoE binary built with the llama feature
+plus the reference llama.cpp DLLs. Real responses carry
 "simulation": false, backend "llama.cpp", and the header x-rustmoe-backend.
 Simulation responses carry "simulation": true and x-rustmoe-simulation: true.
 
@@ -14,15 +23,51 @@ Start with --api-key secret to require:
 
     Authorization: Bearer secret
 
-Health, model listing, and metrics remain public. Inference, tokenization,
-runtime state, and cache reset require the key.
+Deep server: health, model listing, and metrics remain public. Inference,
+tokenization, runtime state, cache reset, and agent endpoints require the key.
+
+Fast agent: health and /v1/models are public; /v1/agent/* requires
+--api-key when configured. The agent page stores the key in localStorage.
+
+## Fast agent API subset
+
+The binary at http://127.0.0.1:8081 exposes:
+
+    GET  /health
+    GET  /agent
+    GET  /v1/models
+    POST /v1/agent/run
+    POST /v1/agent/cancel
+    GET  /v1/agent/projects
+    DELETE /v1/agent/projects/{name}
+    GET  /v1/agent/projects/{name}/export
+    GET  /v1/agent/skills
+    GET  /v1/agent/skills/{name}
+    GET  /chat      redirects to the Strata UI
+    GET  /status    small JSON status
+
+It does not expose /v1/chat/completions, /v1/completions, /v1/tokenize,
+/v1/runtime, /v1/system, /v1/telemetry, or /metrics. Use Strata at 8080 for
+chat/completions in fast mode.
+
+/health returns:
+
+    {"status":"ok","service":"rustmoe-fast-agent",
+     "model":"qwen3.8-flash-next-iq3_s",
+     "upstream":"http://127.0.0.1:8080","auth_required":false}
 
 ## POST /v1/agent/run
 
-Local development-agent loop. Body: task, workspace, max_steps. Returns SSE
-events: start, step, tool, finish, error. Requires auth when enabled. The agent
-only accesses paths under the server's --agent-root; shell is disabled unless
---agent-allow-shell is set. See docs/agent.md.
+Local development-agent loop. Body: task, workspace, max_steps, resume. Returns
+SSE events: start, thinking, step, tool, finish, error. Requires auth when
+enabled. The agent only accesses paths under the server's --agent-root; shell is
+disabled unless --agent-allow-shell is set. See docs/agent.md.
+
+    {"task":"...","workspace":"","max_steps":24,"resume":false}
+
+Empty workspace creates a project. A run can pass resume=true with an existing
+workspace to continue from .rustmoe-agent-state.json. max_steps is 1-64;
+a new run honors the requested value.
 
 ## Local agent project endpoints
 
@@ -45,11 +90,12 @@ Lists installed SKILL.md packs: name, description, path. `GET
 ## GET /agent
 
 Dev Agent browser UI. It starts /v1/agent/run, streams execution events, and
-collects written file paths.
+collects written file paths. Fast mode serves it on 8081; deep mode serves it on
+8080. The fast page links /chat to Strata and /status to a small JSON status.
 
 ## GET /chat
 
-Browser chat UI. It streams /v1/chat/completions with `stream: true`, keeps
+Browser chat UI (deep server only). Fast mode redirects to the Strata UI. It streams /v1/chat/completions with `stream: true`, keeps
 history client-side, and shows /v1/telemetry in the sidebar. Max new tokens is
 estimated from the prompt in the range 8192-262144, capped by context; on
 finish_reason=length it automatically continues in the same bubble. Auto-sizing
@@ -61,7 +107,7 @@ localStorage.
 
 ## GET /status
 
-Dark live dashboard. The page is public; it polls /health, /v1/models,
+Dark live dashboard (deep server only). Fast mode returns a small JSON status. The page is public; it polls /health, /v1/models,
 /v1/runtime, and /v1/telemetry every second. If --api-key is configured, the
 page shows a key field and stores the bearer token in localStorage. It renders
 service, context, live VRAM, device plan, backend cache, latency history,
@@ -89,12 +135,16 @@ Live hardware snapshot from nvidia-smi and sysinfo. Requires auth when enabled.
 
     {"status":"ok","model":"...","backend":"simulation","simulation":true,"uptime_secs":12}
 
+Fast agent health identifies itself with service rustmoe-fast-agent.
+
 ## GET /v1/models
 
 OpenAI list shape, plus top-level context_length, max_context_length,
 context_window, and max_model_len fields. A rustmoe object also carries
 architecture, backend, simulation, context length, chat format, and tensor
-count. The 128K run reports 131072/1048576/131072/131072.
+count. The deep 128K run reports 131072/1048576/131072/131072.
+
+The fast agent lists only qwen3.8-flash-next-iq3_s with 262144 context.
 
 ## GET /v1/runtime
 

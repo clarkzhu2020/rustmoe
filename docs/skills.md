@@ -15,6 +15,14 @@ the skill tool:
 
     {"tool":"skill","args":{"name":"web-research"}}
 
+It can also read a helper file from the same skill directory:
+
+    {"tool":"skill","args":{"name":"comfyui-video","file":"comfyui.mjs"}}
+
+Fast agent (8081) and deep agent (8080) load the same skills. Shell commands get
+RUSTMOE_SKILLS_DIR set to the absolute skills directory, so helper scripts can
+use $RUSTMOE_SKILLS_DIR.
+
 ## Installed skills
 
 Custom workflow packs in this repository:
@@ -83,7 +91,8 @@ Restart is not required: skills are rescanned for each agent run.
     GET /v1/agent/skills
     GET /v1/agent/skills/{name}
 
-The first returns name, description, path. The second returns the full SKILL.md.
+These are available on both 8080 (deep) and 8081 (fast agent). The first returns
+name, description, path. The second returns the full SKILL.md.
 
 ## Importing DeepSeek Harness skills
 

@@ -1,5 +1,14 @@
 # Benchmark notes
 
+## Current 24 GB baseline
+
+The production profile is now RTX 4090 24 GB, 128K context, 24 threads, 3 GPU
+expert layers, 37 host layers, and 0 MiB MoE cache. Short requests measure
+4-5 tok/s; the 8-token benchmark measured 4.03-5.16 tok/s. See
+[performance.md](performance.md) for the current table and the Strata
+comparison. The 12 GB sections below are the historical low-memory validation
+and are not the interactive profile.
+
 ## Real IQ1_S benchmark on 12 GB
 
 RustMoE now executes real DeepSeek-V4.1-Flash-1017 through the llama.cpp
