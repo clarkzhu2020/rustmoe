@@ -1,7 +1,8 @@
 //! OpenAI-compatible HTTP surface with SSE streaming and runtime metrics.
 
 use crate::agent::{
-    delete_project, export_project, list_projects_with_active, run_agent, AgentConfig, AgentEvent,
+    delete_project, export_project, list_projects_with_active, list_skill_infos, read_skill, run_agent,
+    AgentConfig, AgentEvent,
 };
 use crate::runtime::{Runtime, RuntimeInfo};
 use axum::{
@@ -51,6 +52,8 @@ pub fn build_router_with_agent(runtime: AppState, agent: AgentConfig) -> Router 
         .route("/v1/agent/run", post(agent_run))
         .route("/v1/agent/cancel", post(agent_cancel))
         .route("/v1/agent/projects", get(agent_projects))
+        .route("/v1/agent/skills", get(agent_skills))
+        .route("/v1/agent/skills/{name}", get(agent_skill))
         .route("/v1/agent/projects/{name}", delete(agent_delete_project))
         .route("/v1/agent/projects/{name}/export", get(agent_export_project))
         .route("/v1/tokenize", post(tokenize))
@@ -172,6 +175,35 @@ async fn agent_cancel(State(rt): State<AppState>, headers: HeaderMap) -> Result<
     authorize(&headers, &rt)?;
     rt.agent_cancel.store(true, std::sync::atomic::Ordering::Relaxed);
     Ok(Json(json!({"cancelled": true})))
+}
+
+async fn agent_skills(
+    State(rt): State<AppState>,
+    Extension(agent): Extension<Arc<AgentConfig>>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, ApiError> {
+    authorize(&headers, &rt)?;
+    let dir = agent.skills_dir.clone();
+    let skills = tokio::task::spawn_blocking(move || list_skill_infos(&dir))
+        .await
+        .map_err(|e| ApiError::internal("agent_skills_task", e.to_string()))?;
+    Ok(Json(json!({ "skills": skills })))
+}
+
+async fn agent_skill(
+    State(rt): State<AppState>,
+    Extension(agent): Extension<Arc<AgentConfig>>,
+    headers: HeaderMap,
+    AxumPath(name): AxumPath<String>,
+) -> Result<Json<Value>, ApiError> {
+    authorize(&headers, &rt)?;
+    let dir = agent.skills_dir.clone();
+    let requested = name.clone();
+    let body = tokio::task::spawn_blocking(move || read_skill(&dir, &requested))
+        .await
+        .map_err(|e| ApiError::internal("agent_skill_task", e.to_string()))?
+        .map_err(|e| ApiError::bad_request("agent_skill", e))?;
+    Ok(Json(json!({ "name": name, "content": body })))
 }
 
 async fn agent_projects(

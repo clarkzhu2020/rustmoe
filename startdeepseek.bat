@@ -24,6 +24,7 @@ if not defined RUSTMOE_ADDR set "RUSTMOE_ADDR=127.0.0.1:8080"
 if not defined RUSTMOE_THREADS set "RUSTMOE_THREADS=24"
 if not defined RUSTMOE_MOE_CACHE set "RUSTMOE_MOE_CACHE=0"
 if not defined RUSTMOE_AGENT_ROOT set "RUSTMOE_AGENT_ROOT=%CD%\workspace"
+if not defined RUSTMOE_SKILLS_DIR set "RUSTMOE_SKILLS_DIR=%CD%\skills"
 if not defined RUSTMOE_AGENT_ALLOW_SHELL set "RUSTMOE_AGENT_ALLOW_SHELL=0"
 set "AGENT_SHELL="
 if "%RUSTMOE_AGENT_ALLOW_SHELL%"=="1" set "AGENT_SHELL=--agent-allow-shell"
@@ -103,7 +104,7 @@ echo [cpu] %RUSTMOE_THREADS% expert threads
 echo [url] http://%RUSTMOE_ADDR%
 echo [ui]  http://%RUSTMOE_ADDR%/status
 echo [chat]  http://%RUSTMOE_ADDR%/chat
-echo [agent] http://%RUSTMOE_ADDR%/agent  root=%RUSTMOE_AGENT_ROOT%  shell=%RUSTMOE_AGENT_ALLOW_SHELL%
+echo [agent] http://%RUSTMOE_ADDR%/agent  root=%RUSTMOE_AGENT_ROOT%  shell=%RUSTMOE_AGENT_ALLOW_SHELL%  skills=%RUSTMOE_SKILLS_DIR%
 echo [api] base URL: http://%RUSTMOE_ADDR%   endpoint: /v1/chat/completions
 echo [api] do not use .../v1/v1/chat/completions or a trailing slash as base URL
 echo.
@@ -139,7 +140,8 @@ echo.
     --context "%CONTEXT%" ^
     --threads "%RUSTMOE_THREADS%" ^
     --moe-cache-mib "%RUSTMOE_MOE_CACHE%" ^
-    --agent-root "%RUSTMOE_AGENT_ROOT%" --agent-max-steps 24 %AGENT_SHELL% ^
+    --agent-root "%RUSTMOE_AGENT_ROOT%" --agent-max-steps 24 ^
+    --skills-dir "%RUSTMOE_SKILLS_DIR%" %AGENT_SHELL% ^
     --llama-batch 512 ^
     --load-mode 1 ^
     --lazy-mode on ^

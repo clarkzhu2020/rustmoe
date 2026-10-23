@@ -182,6 +182,9 @@ pub enum Command {
         /// Root directory the development agent may access.
         #[arg(long, default_value = "workspace")]
         agent_root: PathBuf,
+        /// Directory containing SKILL.md packs.
+        #[arg(long, default_value = "skills")]
+        skills_dir: PathBuf,
         /// Allow the agent to run shell commands (pwsh) inside the root.
         #[arg(long)]
         agent_allow_shell: bool,
@@ -314,6 +317,7 @@ pub async fn run() -> Result<()> {
             model_id,
             prefetch_layers,
             agent_root,
+            skills_dir,
             agent_allow_shell,
             agent_max_steps,
         } => {
@@ -342,6 +346,7 @@ pub async fn run() -> Result<()> {
                 prefetch_layers,
                 AgentConfig {
                     root: agent_root,
+                    skills_dir,
                     allow_shell: agent_allow_shell,
                     max_steps: agent_max_steps,
                 },
@@ -952,6 +957,8 @@ async fn serve(
     }
     std::fs::create_dir_all(&agent.root)
         .with_context(|| format!("create agent root {}", agent.root.display()))?;
+    std::fs::create_dir_all(&agent.skills_dir)
+        .with_context(|| format!("create skills dir {}", agent.skills_dir.display()))?;
     if let Err(error) = crate::agent::mark_interrupted_projects(&agent.root) {
         tracing::warn!("could not mark interrupted agent projects: {error}");
     }

@@ -36,6 +36,12 @@ workspace create a name from task keywords plus a timestamp. A run can pass
 resume=true (workspace is required) to continue from .rustmoe-agent-state.json;
 the event stream and project list expose status and step.
 
+## GET /v1/agent/skills
+
+Lists installed SKILL.md packs: name, description, path. `GET
+/v1/agent/skills/{name}` returns the full skill body. Skills are scanned from
+--skills-dir at each agent run.
+
 ## GET /agent
 
 Dev Agent browser UI. It starts /v1/agent/run, streams execution events, and

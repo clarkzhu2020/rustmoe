@@ -207,6 +207,15 @@ Use a dedicated directory and review all generated code before production; see
 
 ![RustMoE Dev Agent](docs/agent.png)
 
+### Skills
+
+The agent loads 17 SKILL.md packs from `skills/`: web research, ComfyUI video
+workflows, computer control, website maintenance, project delivery, and the
+installed DeepSeek Harness packs (agent experience, Cordis, Office, Windows ACL).
+The model sees the catalog and loads a skill body with the `skill` tool. Web
+search/fetch and ComfyUI are executed through the skills' helper scripts and the
+agent shell. See [docs/skills.md](docs/skills.md).
+
 For a manual placement, add --no-auto-device and the explicit flags.
 
 ![RustMoE live status dashboard](docs/status-dashboard.png)

@@ -18,6 +18,7 @@ use wait_timeout::ChildExt;
 #[derive(Clone, Debug)]
 pub struct AgentConfig {
     pub root: PathBuf,
+    pub skills_dir: PathBuf,
     pub allow_shell: bool,
     pub max_steps: usize,
 }
@@ -26,10 +27,191 @@ impl Default for AgentConfig {
     fn default() -> Self {
         Self {
             root: PathBuf::from("workspace"),
+            skills_dir: PathBuf::from("skills"),
             allow_shell: false,
             max_steps: 24,
         }
     }
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct SkillInfo {
+    pub name: String,
+    pub description: String,
+    pub path: String,
+}
+
+#[derive(Clone, Debug)]
+struct Skill {
+    info: SkillInfo,
+    body: String,
+}
+
+fn load_skills(dir: &Path) -> Vec<Skill> {
+    fn walk(root: &Path, dir: &Path, depth: usize, out: &mut Vec<(PathBuf, String)>) {
+        if depth > 5 || out.len() > 100 {
+            return;
+        }
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name == "node_modules" || name == ".git" || name == "target" {
+                continue;
+            }
+            if path.is_dir() {
+                walk(root, &path, depth + 1, out);
+            } else if name == "SKILL.md" {
+                if let Ok(body) = std::fs::read_to_string(&path) {
+                    let rel = path.strip_prefix(root).unwrap_or(&path).display().to_string();
+                    out.push((path, body));
+                    let _ = rel;
+                }
+            }
+        }
+    }
+    let root = dir;
+    let mut files = Vec::new();
+    walk(root, root, 0, &mut files);
+    files
+        .into_iter()
+        .map(|(path, body)| {
+            let fallback = path
+                .parent()
+                .and_then(|p| p.file_name())
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| "skill".into());
+            let (name, description) = parse_skill_header(&body, &fallback);
+            Skill {
+                info: SkillInfo {
+                    name,
+                    description,
+                    path: path.display().to_string(),
+                },
+                body,
+            }
+        })
+        .collect()
+}
+
+fn parse_skill_header(body: &str, fallback: &str) -> (String, String) {
+    let mut name = fallback.to_string();
+    let mut description = String::new();
+    let trimmed = body.trim_start();
+    if let Some(rest) = trimmed.strip_prefix("---") {
+        if let Some(end) = rest.find("\n---") {
+            let front = &rest[..end];
+            for line in front.lines() {
+                let Some((key, value)) = line.split_once(':') else {
+                    continue;
+                };
+                let value = value.trim().trim_matches('"').to_string();
+                match key.trim() {
+                    "name" if !value.is_empty() => name = value,
+                    "description" if !value.is_empty() => description = value,
+                    _ => {}
+                }
+            }
+        }
+    }
+    if description.is_empty() {
+        description = body
+            .lines()
+            .find(|line| !line.trim().is_empty() && !line.starts_with("---") && !line.starts_with('#'))
+            .unwrap_or("")
+            .trim()
+            .chars()
+            .take(180)
+            .collect();
+    }
+    (name, description)
+}
+
+pub fn list_skill_infos(dir: &Path) -> Vec<SkillInfo> {
+    load_skills(dir).into_iter().map(|s| s.info).collect()
+}
+
+pub fn read_skill(dir: &Path, name: &str) -> Result<String, String> {
+    let skills = load_skills(dir);
+    skill_body(&skills, name)
+}
+
+fn skill_catalog(skills: &[Skill]) -> String {
+    if skills.is_empty() {
+        return "(none installed)".into();
+    }
+    let mut out = String::new();
+    for skill in skills.iter().take(60) {
+        out.push_str(&format!("- {}: {}\n", skill.info.name, skill.info.description));
+    }
+    out
+}
+
+fn find_skill<'a>(skills: &'a [Skill], name: &str) -> Result<&'a Skill, String> {
+    skills
+        .iter()
+        .find(|s| s.info.name.eq_ignore_ascii_case(name))
+        .ok_or_else(|| {
+            format!(
+                "unknown skill {name:?}; available: {}",
+                skills
+                    .iter()
+                    .map(|s| s.info.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        })
+}
+
+fn skill_body(skills: &[Skill], name: &str) -> Result<String, String> {
+    let skill = find_skill(skills, name)?;
+    let dir = Path::new(&skill.info.path).parent().unwrap_or(Path::new("."));
+    let mut refs = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten().take(40) {
+            let path = entry.path();
+            if path.is_file() && path.file_name().and_then(|n| n.to_str()) != Some("SKILL.md") {
+                if let Ok(rel) = path.strip_prefix(dir) {
+                    refs.push(rel.display().to_string());
+                }
+            }
+        }
+    }
+    refs.sort();
+    Ok(format!(
+        "# Skill: {}\nPath: {}\nHelper files: {}\n\n{}",
+        skill.info.name,
+        skill.info.path,
+        refs.join(", "),
+        skill.body
+    ))
+}
+
+fn skill_file(skills: &[Skill], name: &str, file: &str) -> Result<String, String> {
+    let skill = find_skill(skills, name)?;
+    let base = Path::new(&skill.info.path)
+        .parent()
+        .ok_or("skill has no directory")?;
+    let rel = Path::new(file);
+    for component in rel.components() {
+        if matches!(
+            component,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+        ) {
+            return Err("skill file must stay inside the skill directory".into());
+        }
+    }
+    let path = base.join(rel);
+    if !path.starts_with(base) {
+        return Err("skill file escapes the skill directory".into());
+    }
+    let bytes = std::fs::read(&path).map_err(|e| format!("read skill file {}: {e}", path.display()))?;
+    if bytes.len() > 1_000_000 {
+        return Err("skill file is larger than 1 MB".into());
+    }
+    String::from_utf8(bytes).map_err(|_| "skill file is not UTF-8".into())
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -160,7 +342,12 @@ fn execute(
     });
     let mut history = state.transcript.clone();
     let mut written = Vec::<String>::new();
-    let system = agent_system_prompt(&root, config.allow_shell);
+    let skills_dir = config
+        .skills_dir
+        .canonicalize()
+        .unwrap_or_else(|_| config.skills_dir.clone());
+    let skills = load_skills(&skills_dir);
+    let system = agent_system_prompt(&root, config.allow_shell, &skills);
     for step in (start_step + 1)..=max_steps {
         if cancel.load(Ordering::Relaxed) {
             state.status = "interrupted".into();
@@ -298,7 +485,14 @@ fn execute(
             });
             return Ok(());
         }
-        let outcome = execute_tool(&root, &workspace, config.allow_shell, &action);
+        let outcome = execute_tool(
+            &root,
+            &workspace,
+            config.allow_shell,
+            &skills_dir,
+            &skills,
+            &action,
+        );
         let output = match outcome {
             Ok(output) => output,
             Err(error) => format!("ERROR: {error}"),
@@ -351,7 +545,7 @@ fn execute(
     Ok(())
 }
 
-fn agent_system_prompt(root: &Path, allow_shell: bool) -> String {
+fn agent_system_prompt(root: &Path, allow_shell: bool, skills: &[Skill]) -> String {
     let shell = if allow_shell {
         "shell is ENABLED. Use it to install/build/test. Never run destructive commands outside the workspace."
     } else {
@@ -373,6 +567,9 @@ You deliver a production-oriented project through these phases:
 
 {shell}
 
+Available skills (load details with the skill tool):
+{skills}
+
 Reply with exactly ONE JSON object. The first character must be {{ and the last
 character must be }}. No markdown fence, no prose, no explanation outside it.
 
@@ -390,6 +587,8 @@ Tools:
 - {{"tool":"glob","args":{{"pattern":"**/*.rs"}}}}
 - {{"tool":"grep","args":{{"query":"TODO","path":"."}}}}
 - {{"tool":"shell","args":{{"command":"cargo test","timeout_secs":120}}}}
+- {{"tool":"skill","args":{{"name":"web-research"}}}}
+- {{"tool":"skill","args":{{"name":"comfyui-video","file":"comfyui.mjs"}}}}
 - {{"tool":"finish","args":{{"summary":"what was delivered","deliverables":["..."]}}}}
 
 Rules:
@@ -401,7 +600,8 @@ Rules:
 - The final answer must leave a coherent, runnable, documented project.
 "#,
         root = root.display(),
-        shell = shell
+        shell = shell,
+        skills = skill_catalog(skills)
     )
 }
 
@@ -451,8 +651,22 @@ fn arg_str(args: &Value, key: &str) -> Option<String> {
     args.get(key).and_then(Value::as_str).map(str::to_string)
 }
 
-fn execute_tool(root: &Path, workspace: &Path, allow_shell: bool, action: &Action) -> Result<String, String> {
+fn execute_tool(
+    root: &Path,
+    workspace: &Path,
+    allow_shell: bool,
+    skills_dir: &Path,
+    skills: &[Skill],
+    action: &Action,
+) -> Result<String, String> {
     match action.tool.as_str() {
+        "skill" => {
+            let name = arg_str(&action.args, "name").ok_or("skill requires name")?;
+            match arg_str(&action.args, "file") {
+                Some(file) => skill_file(skills, &name, &file),
+                None => skill_body(skills, &name),
+            }
+        }
         "list" => {
             let path = resolve_under(
                 root,
@@ -544,7 +758,7 @@ fn execute_tool(root: &Path, workspace: &Path, allow_shell: bool, action: &Actio
                 .and_then(Value::as_u64)
                 .unwrap_or(120)
                 .min(600);
-            run_shell(workspace, &command, timeout)
+            run_shell(workspace, skills_dir, &command, timeout)
         }
         other => Err(format!("unknown tool {other:?}")),
     }
@@ -729,7 +943,12 @@ fn grep_path(path: &Path, query: &str) -> Result<String, String> {
     Ok(out.join("\n"))
 }
 
-fn run_shell(workspace: &Path, command: &str, timeout_secs: u64) -> Result<String, String> {
+fn run_shell(
+    workspace: &Path,
+    skills_dir: &Path,
+    command: &str,
+    timeout_secs: u64,
+) -> Result<String, String> {
     let mut cmd = if cfg!(windows) {
         let mut c = Command::new("pwsh");
         c.args(["-NoProfile", "-NonInteractive", "-Command", command]);
@@ -741,6 +960,7 @@ fn run_shell(workspace: &Path, command: &str, timeout_secs: u64) -> Result<Strin
     };
     let mut child = cmd
         .current_dir(workspace)
+        .env("RUSTMOE_SKILLS_DIR", skills_dir)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -806,14 +1026,14 @@ mod tests {
             tool: "write".into(),
             args: serde_json::json!({"path": "src/main.rs", "content": "fn main() {}"}),
         };
-        execute_tool(&root, &root, false, &action).unwrap();
+        execute_tool(&root, &root, false, Path::new("skills"), &[], &action).unwrap();
         let read = Action {
             phase: "code".into(),
             thought: String::new(),
             tool: "read".into(),
             args: serde_json::json!({"path": "src/main.rs"}),
         };
-        let text = execute_tool(&root, &root, false, &read).unwrap();
+        let text = execute_tool(&root, &root, false, Path::new("skills"), &[], &read).unwrap();
         assert_eq!(text, "fn main() {}");
     }
 }
@@ -1229,5 +1449,22 @@ mod resume_tests {
         assert_eq!(state.step, 3);
         let projects = list_projects(&root).unwrap();
         assert_eq!(projects[0].status, "interrupted");
+    }
+}
+
+#[cfg(test)]
+mod skill_tests {
+    use super::*;
+
+    #[test]
+    fn loads_installed_skills() {
+        let skills = load_skills(Path::new("../../skills"));
+        let names: Vec<&str> = skills.iter().map(|s| s.info.name.as_str()).collect();
+        assert!(names.contains(&"web-research"), "{names:?}");
+        assert!(names.contains(&"comfyui-video"), "{names:?}");
+        assert!(names.contains(&"agent-experience"), "{names:?}");
+        assert!(skill_body(&skills, "web-research")
+            .unwrap()
+            .contains("search.mjs"));
     }
 }
