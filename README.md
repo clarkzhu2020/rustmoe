@@ -48,7 +48,8 @@ Open:
     http://127.0.0.1:8080/v1       OpenAI-compatible API
 
 Deep model loading can take 1-5 minutes on NVMe. The switch scripts wait for
-/health before returning.
+/health before returning. If target\release\rustmoe.exe is missing,
+startdeepseek.bat runs the release build automatically.
 
 ## Why two engines?
 

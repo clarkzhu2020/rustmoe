@@ -56,6 +56,15 @@ If Strata requires an API key, start the agent with:
 
     --upstream-api-key KEY
 
+## Deep server says rustmoe.exe is missing
+
+startdeepseek.bat now attempts a release build automatically when the binary is
+missing. If that fails, run:
+
+    cargo build --release -p rustmoe-server --features llama --bin rustmoe
+
+Check that cargo is on PATH and that target\release is writable.
+
 ## Deep server fails to load
 
 Common causes:
