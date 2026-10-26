@@ -114,6 +114,22 @@ Deep model loading can take 1-5 minutes. The script waits up to 900 seconds and
 then prints the ready line. If it times out, check the loader window or the
 startdeepseek log.
 
+## Strata startup tuning
+
+Strata needs headroom after loading the expert cache. On this 24 GB card the
+working settings are:
+
+    --vram-reserve-mib 1200
+    --prefill auto:4096
+
+With 700 MiB reserve Strata loaded but exited with only 333 MiB VRAM free. At
+1200 MiB it started with about 1.3 GB free. These values live in
+C:\Strata\strata-iq3_s.json. A smaller prompt chunk borrows fewer GPU cache
+slots during prefill.
+
+If engine-fast times out, read C:\Strata\strata-iq3_s.log and look for the last
+VRAM free line. Also remove stale Python setup.py launchers from failed starts.
+
 ## Why not both
 
     Strata VRAM: about 23.5 GB

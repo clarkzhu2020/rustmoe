@@ -43,6 +43,15 @@ function Stop-EngineProcesses {
     Start-Sleep -Seconds 2
 }
 
+function Stop-StaleStrata {
+    Get-Process -Name strata,strata-vision -ErrorAction SilentlyContinue |
+        Stop-Process -Force -ErrorAction SilentlyContinue
+    Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -like "python*" -and $_.CommandLine -match "C:\\Strata" } |
+        ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    Start-Sleep -Seconds 2
+}
+
 function Show-Status {
     $h = Get-Health
     $gpu = nvidia-smi --query-gpu=index,name,memory.used,memory.free,utilization.gpu --format=csv,noheader 2>$null
@@ -114,6 +123,7 @@ function Start-FastAgent {
 function Start-Fast {
     $h = Get-Health
     if (-not ($h -and $h.service -eq "strata")) {
+        Stop-StaleStrata
         if (Get-Process -Name rustmoe -ErrorAction SilentlyContinue) {
             Write-Host "[fast] stopping rustmoe to free VRAM"
             Stop-EngineProcesses
@@ -124,7 +134,9 @@ function Start-Fast {
         Write-Host "[fast] starting Strata from $StrataHome ..."
         Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "START-HERE.bat" -WorkingDirectory $StrataHome -WindowStyle Hidden
         $up = Wait-Health { param($x) $x.service -eq "strata" } 300
-        if (-not $up) { throw "Strata did not become ready on $Addr within 300s" }
+        if (-not $up) {
+            throw "Strata did not become ready on $Addr within 300s. Check C:\Strata\strata-iq3_s.log for the last VRAM-free line and stale setup.py processes."
+        }
         Write-Host "[fast] ready: $($up.model)"
     } else {
         Write-Host "[fast] Strata is already running on $Addr"
@@ -146,6 +158,7 @@ function Start-Deep {
         Write-Host "[deep] stopping Strata to free VRAM"
         Stop-EngineProcesses
     }
+    Stop-StaleStrata
     if (Get-Process -Name rustmoe -ErrorAction SilentlyContinue) {
         Write-Host "[deep] stopping previous rustmoe"
         Get-Process -Name rustmoe -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue

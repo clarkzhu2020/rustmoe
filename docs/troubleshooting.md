@@ -12,6 +12,26 @@ This prints:
 
 Most "slow" or "wrong page" reports are simply the other engine owning 8080.
 
+## engine-fast times out waiting for Strata
+
+Strata can take 2-3 minutes to load 46 GiB of experts and fill the GPU cache.
+If it times out, inspect:
+
+    C:\Strata\strata-iq3_s.log
+
+Look for the last VRAM free line. If it says only a few hundred MiB free, the
+engine may exit right after loading. The working configuration on this host is:
+
+    --vram-reserve-mib 1200
+    --prefill auto:4096
+
+A reserve of 700 MiB left only 333 MiB free and the engine exited. With 1200
+MiB and a 4096-token prompt chunk, Strata started with about 1.3 GB free and the
+fast agent completed a two-step task.
+
+Do not start several failed Strata launchers at once. Check for stale Python
+setup.py processes before retrying.
+
 ## 8080 is Strata but I expected RustMoE
 
 That is fast mode. Switch:
