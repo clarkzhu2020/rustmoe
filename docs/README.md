@@ -10,6 +10,11 @@ Start with the repository [README](../README.md).
   realistic optimization limits.
 - [Troubleshooting](troubleshooting.md) - ports, loading, auth, agent, TPS.
 
+## Model setup
+
+- [Setup](setup.md) - list HuggingFace profiles, search, add wizard, resume,
+  registry, and pointer for startdeepseek.
+
 ## Agent and skills
 
 - [Dev Agent](agent.md) - local tools, project isolation, resume, security.

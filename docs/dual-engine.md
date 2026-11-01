@@ -155,6 +155,40 @@ At the time of writing:
 
 The fast agent wrote and finished a test file in two tool steps.
 
+## DeepSeek fast agent in one command
+
+Use this when the agent should use Strata's loaded DeepSeek model instead of
+Qwen. Strata must be running first, but the launcher handles the order:
+
+    deepseek-agent.bat
+
+It performs these steps:
+
+1. Check 8080. If DeepSeek is already loaded, reuse it.
+2. If another engine (for example Qwen) is on 8080, restart Strata with
+   DeepSeek IST-DAS-2.00bpw, 8K context, 5 of 6 experts.
+3. Wait up to 1200 seconds for the model to load.
+4. Start rustmoe-agent on 8081 with upstream http://127.0.0.1:8080 and model
+   deepseek-v4.1-flash.
+5. Wait for the agent /health.
+
+URLs:
+
+    http://127.0.0.1:8080/v1       Strata DeepSeek API
+    http://127.0.0.1:8081/agent    RustMoE local-tool agent
+
+Stop both:
+
+    deepseek-agent-stop.bat
+
+Check without changing anything:
+
+    powershell -NoProfile -ExecutionPolicy Bypass -File scripts\deepseek-agent.ps1 -Check
+
+This is API-level sharing. The model is loaded once by Strata. The agent
+process loads no weights and uses no VRAM. It does not make RustMoE's local
+DeepSeek engine accept Strata's pack or GGUF format.
+
 ## Configuration
 
 The scripts read:

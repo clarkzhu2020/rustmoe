@@ -173,6 +173,20 @@ The only change is where the model tokens come from: Strata instead of the local
 DeepSeek engine. A verified two-step task created fast.txt and finished in
 seconds.
 
+### DeepSeek through Strata
+
+To load Strata's DeepSeek model once and point the agent at it:
+
+    deepseek-agent.bat
+
+This starts Strata DeepSeek if it is not already loaded, waits for 8080, then
+starts `rustmoe-agent` on 8081 with model `deepseek-v4.1-flash`. It is the
+one-command way to avoid starting Strata and the agent separately. Stop both
+with `deepseek-agent-stop.bat`. The agent still loads no weights and uses no
+VRAM.
+
+Do not use `engine-fast.bat` for this: it starts Qwen, not DeepSeek.
+
 ## Dev Agent
 
 Both agents use the same project model.
@@ -230,6 +244,32 @@ Skills are instructions, not plugins. Office/Cordis skills can require Python
 packages, LibreOffice Kit, or the DSH Cordis host. ComfyUI requires a running
 server at http://127.0.0.1:8188.
 
+
+## Model setup
+
+RustMoE has a HuggingFace-backed setup command:
+
+    rustmoe --setup models list
+    rustmoe --setup models list --search deepseek
+    rustmoe --setup models add
+    rustmoe --setup models remove <profile>
+
+models list shows the supported DeepSeek profiles, approximate download size,
+context, and installed/current state. --search queries the live HuggingFace
+models API and marks profiles RustMoE can actually load.
+
+models add is a wizard: choose a profile, choose a destination, inspect the
+HuggingFace file list and free space, confirm, then download. Downloads use
+.part files and HTTP Range resume. On success it writes
+.models/setup-models.json and .models/model-path.txt, so startdeepseek.bat uses
+the new model.
+
+Non-interactive:
+
+    rustmoe --setup models add --profile deepseek-v4.1-flash-iq1-s --dest D:\models\iq1-s --yes
+
+This is a model downloader/registry, not a CUDA/llama.cpp/ROCm installer.
+See [docs/setup.md](docs/setup.md).
 
 ## API
 
@@ -444,6 +484,7 @@ Next engineering priorities:
 ## Documentation
 
 - [Documentation index](docs/README.md)
+- [docs/setup.md](docs/setup.md) - HuggingFace model setup and wizard
 - [docs/dual-engine.md](docs/dual-engine.md) - fast/deep switching
 - [docs/troubleshooting.md](docs/troubleshooting.md) - common failures
 - [docs/agent.md](docs/agent.md) - projects, resume, security

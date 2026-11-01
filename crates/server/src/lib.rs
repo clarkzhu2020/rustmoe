@@ -7,3 +7,4 @@ pub mod cli;
 pub mod monitor;
 pub mod progress;
 pub mod runtime;
+pub mod setup;

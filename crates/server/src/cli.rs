@@ -4,6 +4,7 @@ use crate::agent::AgentConfig;
 use crate::api;
 use crate::progress::LoadingProgress;
 use crate::runtime::{BackendKind, LlamaRuntimeOptions, Runtime, RuntimeOptions};
+use crate::setup::{self as setup_models, SetupCommand};
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use rustmoe_attention::{format_bytes, CacheDtype};
@@ -13,6 +14,7 @@ use rustmoe_memory::{plan, BudgetRequest, Diagnostic, HardwareProfile, PlanInput
 use rustmoe_model::{DeepSeekV41Config, ModelDescriptor, ValidationOptions};
 use rustmoe_tokenizer::BpeTokenizer;
 use serde_json::json;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -191,10 +193,19 @@ pub enum Command {
         #[arg(long, default_value_t = 24)]
         agent_max_steps: usize,
     },
+    /// Configure and download models from HuggingFace.
+    Setup {
+        #[command(subcommand)]
+        command: SetupCommand,
+    },
 }
 
 pub async fn run() -> Result<()> {
-    let cli = Cli::parse();
+    let mut args: Vec<OsString> = std::env::args_os().collect();
+    if args.get(1).and_then(|arg| arg.to_str()) == Some("--setup") {
+        args[1] = OsString::from("setup");
+    }
+    let cli = Cli::parse_from(args);
     init_tracing();
     match cli.command {
         Command::Inspect {
@@ -352,6 +363,10 @@ pub async fn run() -> Result<()> {
                 },
             )
             .await
+        }
+        Command::Setup { command } => {
+            tokio::task::spawn_blocking(move || setup_models::run(command)).await??;
+            Ok(())
         }
     }
 }
